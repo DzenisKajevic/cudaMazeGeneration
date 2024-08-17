@@ -7,6 +7,15 @@
 
 // (N*P)*(N*P)
 
+#define cudaCheckError() {                               \
+    cudaError_t e = cudaGetLastError();                    \
+    if (e != cudaSuccess) {                                \
+        printf("CUDA Error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(e)); \
+        exit(EXIT_FAILURE);                                \
+    }                                                     \
+}
+
+
 enum MAZE_PATH {
     EMPTY = 0x0,
     WALL = 0x1,
@@ -20,8 +29,10 @@ enum MAZE_PATH {
 __device__ void initialize_maze_cuda(MAZE_PATH* maze, int size, int* exit_row, int* exit_col, curandState* localState);
 __global__ void init_rng(curandState* state, unsigned long seed);
 __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes);
-__device__ void generate_paths_cuda(MAZE_PATH* maze, bool* visited_cells, int size, int2 exit_coords, curandState* states);
-__device__ void get_unvisited_near_cells_cuda(MAZE_PATH* maze, int size, int2 curr_cell, bool* visited_cells, int2* near_cells, int& n_cells);
+__device__ void generate_paths_cuda(MAZE_PATH* maze, int size, int* exit_coords, curandState* localState);
+__device__ void visit_forward_cuda(MAZE_PATH* maze, int size, int& curr_index, int* curr_cell, int* curr_track, bool* visited_cells, curandState* localState, bool is_exit);
+__device__ void get_unvisited_near_cells_cuda(MAZE_PATH* maze, int* curr_cell, int size, bool* visited_cells, int& n_cells, bool is_exit, int* near_cells);
+__device__ void backtrack_cuda(MAZE_PATH* maze, int size, int& curr_index, int* curr_cell, int* curr_track, bool* visited_cells, curandState* localState);
 
 void combine_mazes(MAZE_PATH* mazes, int n, int p, MAZE_PATH* large_maze);
 void print_maze(MAZE_PATH* maze, int size);
@@ -57,6 +68,14 @@ void print_maze(MAZE_PATH* maze, int size) {
         std::cout << std::endl;
     }
 }
+
+void print_maze_debug(MAZE_PATH* maze, int size) {
+    for (int i = 0; i < size * size; ++i) {
+        std::cout << static_cast<int>(maze[i]) << " ";
+        if ((i + 1) % size == 0) std::cout << std::endl;
+    }
+}
+
 
 
 // Kernel function to initialize random states
@@ -121,19 +140,10 @@ __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes) {
     initialize_maze_cuda(maze, N, &exit_row, &exit_col, &localState);
 
     // Generate the paths
+    generate_paths_cuda(maze, N, new int[2]{ exit_row, exit_col }, &localState);
 
-    // Allocate memory for visited cells
-    bool visited_cells[MAX_SIZE] = { false };
-
-    // Generate the paths
-    generate_paths_cuda(maze, visited_cells, N, make_int2(exit_row, exit_col), &localState);
-
-    // Copy the random state back to the global memory
+    // Store the random state back to global memory
     globalState[idx] = localState;
-
-    // Copy the maze back to the global memory
-    mazes[idx * N * N] = *maze;
-
 }
 
 // Function to combine mazes into one large maze on the CPU
@@ -151,53 +161,106 @@ void combine_mazes(MAZE_PATH* mazes, int n, int p, MAZE_PATH* large_maze) {
     }
 }
 
-__device__ void generate_paths_cuda(MAZE_PATH* maze, bool* visited_cells, int size, int2 exit_coords, curandState* localState) {
-    // Example implementation: DFS with randomization
-    int2 stack[MAX_SIZE];
-    int top = -1;
+__device__ void generate_paths_cuda(MAZE_PATH* maze, int size, int* exit_coords, curandState* localState) {
+    bool* visited_cells = new bool[MAX_SIZE];  // Dynamically allocate
+    int* curr_track = new int[MAX_SIZE * 2];   // Dynamically allocate
+    int curr_index = 0;
 
-    // Start from the exit
-    stack[++top] = exit_coords;
-    visited_cells[exit_coords.x * size + exit_coords.y] = true;
+    int curr_cell[2] = { exit_coords[0], exit_coords[1] };
+    visited_cells[curr_cell[0] * size + curr_cell[1]] = true;
+    curr_track[curr_index * 2] = curr_cell[0];
+    curr_track[curr_index * 2 + 1] = curr_cell[1];
 
-    while (top >= 0) {
-        int2 current = stack[top];
-        int2 neighbors[4];
-        int n_neighbors = 0;
+    visit_forward_cuda(maze, size, curr_index, curr_cell, curr_track, visited_cells, localState, true);
 
-        get_unvisited_near_cells_cuda(maze, size, current, visited_cells, neighbors, n_neighbors);
+    delete[] visited_cells;
+    delete[] curr_track;
+}
 
-        if (n_neighbors > 0) {
-            int2 next = neighbors[curand(localState) % n_neighbors];
-            maze[next.x * size + next.y] = MAZE_PATH::EMPTY;
-            visited_cells[next.x * size + next.y] = true;
-            stack[++top] = next;
+__device__ void visit_forward_cuda(MAZE_PATH* maze, int size, int& curr_index, int* curr_cell, int* curr_track, bool* visited_cells, curandState* localState, bool is_exit) {
+    int n_cells = 0;
+    int near_cells[4 * 2];  // Up to 4 possible cells, each with x and y coordinates
+
+    get_unvisited_near_cells_cuda(maze, curr_cell, size, visited_cells, n_cells, is_exit, near_cells);
+    while (n_cells > 0) {
+        curr_index++;
+        int new_cell_index = curand(localState) % n_cells;
+        int* new_cell = &near_cells[new_cell_index * 2];
+
+        if (!is_exit) {
+            int row_to_del = (new_cell[0] + curr_cell[0]) / 2;
+            int col_to_del = (new_cell[1] + curr_cell[1]) / 2;
+
+            maze[row_to_del * size + col_to_del] = MAZE_PATH::EMPTY;
         }
         else {
-            top--;
+            is_exit = false;
+        }
+
+        curr_cell[0] = new_cell[0];
+        curr_cell[1] = new_cell[1];
+        visited_cells[curr_cell[0] * size + curr_cell[1]] = true;
+        curr_track[curr_index * 2] = curr_cell[0];
+        curr_track[curr_index * 2 + 1] = curr_cell[1];
+
+        get_unvisited_near_cells_cuda(maze, curr_cell, size, visited_cells, n_cells, is_exit, near_cells);
+    }
+    backtrack_cuda(maze, size, curr_index, curr_cell, curr_track, visited_cells, localState);
+}
+
+__device__ void get_unvisited_near_cells_cuda(MAZE_PATH* maze, int* curr_cell, int size, bool* visited_cells, int& n_cells, bool is_exit, int* near_cells) {
+    n_cells = 0;
+    int index_offset = is_exit ? 1 : 2;
+
+    // East cell
+    int index = curr_cell[0] + index_offset;
+    if (index < size && !visited_cells[index * size + curr_cell[1]]) {
+        near_cells[n_cells * 2] = index;
+        near_cells[n_cells * 2 + 1] = curr_cell[1];
+        n_cells++;
+    }
+
+    // North cell
+    index = curr_cell[1] + index_offset;
+    if (index < size && !visited_cells[curr_cell[0] * size + index]) {
+        near_cells[n_cells * 2] = curr_cell[0];
+        near_cells[n_cells * 2 + 1] = index;
+        n_cells++;
+    }
+
+    // West cell
+    index = curr_cell[0] - index_offset;
+    if (index >= 0 && !visited_cells[index * size + curr_cell[1]]) {
+        near_cells[n_cells * 2] = index;
+        near_cells[n_cells * 2 + 1] = curr_cell[1];
+        n_cells++;
+    }
+
+    // South cell
+    index = curr_cell[1] - index_offset;
+    if (index >= 0 && !visited_cells[curr_cell[0] * size + index]) {
+        near_cells[n_cells * 2] = curr_cell[0];
+        near_cells[n_cells * 2 + 1] = index;
+        n_cells++;
+    }
+}
+
+__device__ void backtrack_cuda(MAZE_PATH* maze, int size, int& curr_index, int* curr_cell, int* curr_track, bool* visited_cells, curandState* localState) {
+    int n_cells = 0;
+
+    for (int index = curr_index - 1; index > 0; index--) {
+        curr_cell[0] = curr_track[index * 2];
+        curr_cell[1] = curr_track[index * 2 + 1];
+        curr_index = index;
+
+        get_unvisited_near_cells_cuda(maze, curr_cell, size, visited_cells, n_cells, false, curr_track);
+        if (n_cells > 0) {
+            visit_forward_cuda(maze, size, curr_index, curr_cell, curr_track, visited_cells, localState, false);
+            break;
         }
     }
 }
 
-__device__ void get_unvisited_near_cells_cuda(MAZE_PATH* maze, int size, int2 curr_cell, bool* visited_cells, int2* near_cells, int& n_cells) {
-    n_cells = 0;
-    int row = curr_cell.x;
-    int col = curr_cell.y;
-
-    // Check the four possible directions (up, down, left, right)
-    if (row > 1 && !visited_cells[(row - 2) * size + col]) {
-        near_cells[n_cells++] = make_int2(row - 2, col);
-    }
-    if (row < size - 2 && !visited_cells[(row + 2) * size + col]) {
-        near_cells[n_cells++] = make_int2(row + 2, col);
-    }
-    if (col > 1 && !visited_cells[row * size + col - 2]) {
-        near_cells[n_cells++] = make_int2(row, col - 2);
-    }
-    if (col < size - 2 && !visited_cells[row * size + col + 2]) {
-        near_cells[n_cells++] = make_int2(row, col + 2);
-    }
-}
 
 
 int main() {
@@ -215,9 +278,15 @@ int main() {
 
     // Initialize the RNG states
     init_rng << <P, P >> > (d_states, time(NULL));
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
 
     // Generate the mazes
     generate_mazes << <P, P >> > (d_states, d_mazes);
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
 
     // Allocate memory for one maze on the CPU
     MAZE_PATH* h_single_maze = new MAZE_PATH[maze_size];
@@ -226,9 +295,12 @@ int main() {
     for (int i = 0; i < num_mazes; ++i) {
         // Copy the maze from the GPU to the CPU
         cudaMemcpy(h_single_maze, d_mazes + i * maze_size, maze_size * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
+        //cudaCheckError();
 
         // Print the maze
         print_maze(h_single_maze, N);
+
+        //print_maze_debug(h_single_maze, N);
 
         // Optionally, add a separator between mazes
         std::cout << "--------------------\n";
