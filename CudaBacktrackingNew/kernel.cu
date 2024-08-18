@@ -4,6 +4,7 @@
 #define N 9  // Size of individual mazes (N x N)
 #define P 2  // Number of mazes in one row/column of the large maze
 #define MAX_SIZE (N * N)
+#define DEBUG_THREAD_ID 0  // Thread ID to debug
 
 // (N*P)*(N*P)
 
@@ -24,16 +25,48 @@ enum MAZE_PATH {
     PARTICLE = 0x5,
 };
 
-// Declaration (if defined later or in another file)
 __device__ void initialize_maze_cuda(MAZE_PATH* maze, int size, int* exit_row, int* exit_col, curandState* localState);
 __global__ void init_rng(curandState* state, unsigned long seed);
 __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes);
 
-__device__ void add_walls_to_queue(int* queue, int& queue_size, int x, int y, int size, bool* in_maze);
-__device__ void generate_paths_prim_cuda(MAZE_PATH* maze, int size, int* exit_coords, curandState* localState);
+__device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, int start_col, curandState* localState);
+__device__ void print_maze_thread(MAZE_PATH* maze, int size);
 
 void print_maze(MAZE_PATH* maze, int size);
 void print_maze_debug(MAZE_PATH* maze, int size);
+
+__device__ void print_maze_thread(MAZE_PATH* maze, int size) {
+    for (int row = 0; row < size; ++row) {
+        for (int col = 0; col < size; ++col) {
+            switch (maze[row * size + col]) {
+            case MAZE_PATH::EMPTY:
+                printf(" ");
+                break;
+            case MAZE_PATH::WALL:
+                printf("#");
+                break;
+            case MAZE_PATH::EXIT:
+                printf("E");
+                break;
+            case MAZE_PATH::SOLUTION:
+                printf(".");
+                break;
+            case MAZE_PATH::START:
+                printf("S");
+                break;
+            case MAZE_PATH::PARTICLE:
+                printf("P");
+                break;
+            default:
+                printf("?");
+                break;
+            }
+            printf(" ");
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
 
 // Function to print the maze
 void print_maze(MAZE_PATH* maze, int size) {
@@ -62,6 +95,7 @@ void print_maze(MAZE_PATH* maze, int size) {
                 std::cout << "?";
                 break;
             }
+            std::cout << " ";
         }
         std::cout << std::endl;
     }
@@ -78,7 +112,7 @@ void print_maze_debug(MAZE_PATH* maze, int size) {
 // Kernel function to initialize random states
 __global__ void init_rng(curandState* state, unsigned long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    curand_init(seed, idx, 0, &state[idx]);
+    curand_init(seed + idx, idx, 0, &state[idx]);
 
     // Debug print to ensure that initialization happened
     if (idx >= 0) {  // Only print for the first thread to reduce clutter
@@ -106,17 +140,96 @@ __device__ void initialize_maze_cuda(MAZE_PATH* maze, int size, int* exit_row, i
     int border_choice = curand(localState) % 2;
 
     if (border_choice == 0) {
-        // Top or bottom border
         *exit_row = (curand(localState) % 2 == 0) ? 0 : size - 1;
         *exit_col = (curand(localState) % (size / 2)) * 2 + 1;
     }
     else {
-        // Left or right border
         *exit_row = (curand(localState) % (size / 2)) * 2 + 1;
         *exit_col = (curand(localState) % 2 == 0) ? 0 : size - 1;
     }
 
     maze[*exit_row * size + *exit_col] = MAZE_PATH::EXIT;
+}
+
+// DFS Maze Generation with Backtracking
+__device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, int start_col, curandState* localState) {
+    // Stack-based DFS using explicit stack
+    int stack[MAX_SIZE][2]; // Each entry holds (row, col)
+    int stack_size = 0;
+
+    bool visited[MAX_SIZE] = { false };
+    stack[stack_size][0] = start_row;
+    stack[stack_size][1] = start_col;
+    visited[start_row * size + start_col] = true;
+    stack_size++;
+
+    int direction[4][2] = { {0, 2}, {2, 0}, {0, -2}, {-2, 0} }; // Up, Right, Down, Left
+
+    int iteration_count = 0;  // Counter to prevent infinite loops
+
+    while (stack_size > 0) {
+        int curr_row = stack[stack_size - 1][0];
+        int curr_col = stack[stack_size - 1][1];
+        stack_size--;
+
+        int directions_to_try[4] = { 0, 1, 2, 3 };
+
+        // Shuffle directions
+        for (int i = 3; i > 0; --i) {
+            int j = curand(localState) % (i + 1);
+            int temp = directions_to_try[i];
+            directions_to_try[i] = directions_to_try[j];
+            directions_to_try[j] = temp;
+        }
+
+        bool path_found = false;
+
+        // Explore neighbors in random order
+        for (int i = 0; i < 4; ++i) {
+            int new_row = curr_row + direction[directions_to_try[i]][0];
+            int new_col = curr_col + direction[directions_to_try[i]][1];
+
+            if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
+                if (!visited[new_row * size + new_col]) {
+                    visited[new_row * size + new_col] = true;
+                    stack[stack_size][0] = new_row;
+                    stack[stack_size][1] = new_col;
+                    stack_size++;
+
+                    // Remove the wall between current and new cell
+                    //int wall_col = (curr_col + new_col) / 2;
+                    //maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
+                    int wall_row = (curr_row + new_row) / 2;
+                    int wall_col = (curr_col + new_col) / 2;
+                    maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
+
+                    path_found = true;
+                    break;
+                }
+            }
+        }
+
+        // Debug: print stack size and position
+        if (blockIdx.x * blockDim.x + threadIdx.x == DEBUG_THREAD_ID) {
+            printf("Thread %d, Iteration %d: Stack size %d, Current position (%d, %d)\n",
+                blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
+            print_maze_thread(maze, N);
+        }
+
+        // If no path was found, continue backtracking
+        if (!path_found) {
+            // To prevent pushing the same element multiple times,
+            // we ensure we don't push the same position unless it's valid
+            continue;
+        }
+
+        iteration_count++;
+        if (iteration_count > MAX_SIZE * 10) {
+            // Exit if too many iterations to prevent infinite loop
+            printf("Thread %d: Exiting after too many iterations\n", blockIdx.x * blockDim.x + threadIdx.x);
+            break;
+        }
+    }
 }
 
 // Kernel function to generate individual mazes
@@ -133,6 +246,9 @@ __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes) {
 
     // Initialize the maze
     initialize_maze_cuda(maze, N, &exit_row, &exit_col, &localState);
+
+    // Generate the maze paths using DFS with backtracking
+    dfs_maze_generation(maze, N, exit_row, exit_col, &localState);
 
     // Store the updated state back to global memory
     globalState[idx] = localState;
@@ -163,10 +279,13 @@ int main() {
     cudaMemcpy(h_mazes, d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
     cudaCheckError();
 
+    std::cout << "Mazes generated successfully!" << std::endl;
+
     // Print the mazes
     for (int i = 0; i < num_mazes; ++i) {
         std::cout << "Maze " << i << std::endl;
         print_maze(h_mazes + i * maze_size, N);
+        print_maze_debug(h_mazes + i * maze_size, N);
         std::cout << std::endl;
     }
 
