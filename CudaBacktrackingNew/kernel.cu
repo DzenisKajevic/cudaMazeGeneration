@@ -2,7 +2,7 @@
 #include <iostream>
 
 #define N 21  // Size of individual mazes (N x N)
-#define P 2  // Number of mazes in one row/column of the large maze
+#define P 4  // Number of mazes in one row/column of the large maze
 #define MAX_SIZE (N * N)
 #define DEBUG_THREAD_ID 0  // Thread ID to debug
 
@@ -157,7 +157,9 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
     int stack[MAX_SIZE][2]; // Each entry holds (row, col)
     int stack_size = 0;
 
-    bool visited[MAX_SIZE] = { false };
+    bool visited[MAX_SIZE] = { false };  // Track visited cells
+    int visited_count = 1;  // Start with the initial cell
+
     stack[stack_size][0] = start_row;
     stack[stack_size][1] = start_col;
     visited[start_row * size + start_col] = true;
@@ -165,14 +167,17 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
 
     // Direction vectors for Up, Down, Left, Right
     int direction[4][2] = { {-2, 0}, {2, 0}, {0, -2}, {0, 2} };
+    int exit_direction[4][2] = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} };  // Direction to exit from the start
 
+    int total_cells = ((size - 1) / 2) * ((size - 1) / 2) + 1; // Calculate total cells in the maze that can be visited (paths, not walls)
     int iteration_count = 0;  // Counter to prevent infinite loops
+    bool is_first_move = true;
 
     while (stack_size > 0) {
         int curr_row = stack[stack_size - 1][0];
         int curr_col = stack[stack_size - 1][1];
-        stack_size--;
 
+        bool is_exit = (maze[curr_row * size + curr_col] == MAZE_PATH::EXIT);
         int directions_to_try[4] = { 0, 1, 2, 3 };
 
         // Shuffle directions to introduce randomness
@@ -187,33 +192,56 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
 
         // Explore all possible neighbors in random order
         for (int i = 0; i < 4; ++i) {
-            int new_row = curr_row + direction[directions_to_try[i]][0];
-            int new_col = curr_col + direction[directions_to_try[i]][1];
+            int new_row, new_col;
+
+            if (is_first_move) {
+                // For the first move from the exit, use exit_direction to move away from the boundary
+                new_row = curr_row + exit_direction[directions_to_try[i]][0];
+                new_col = curr_col + exit_direction[directions_to_try[i]][1];
+            }
+            else {
+                // After the first move or if not starting from the exit, use normal direction vectors
+                new_row = curr_row + direction[directions_to_try[i]][0];
+                new_col = curr_col + direction[directions_to_try[i]][1];
+            }
 
             // Ensure we're not moving out of bounds
-            if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
+            if (new_row >= 1 && new_row < size - 1 && new_col >= 1 && new_col < size - 1) {
+                // Ensure the cell hasn't been visited before
                 if (!visited[new_row * size + new_col]) {
                     visited[new_row * size + new_col] = true;
-                    stack[stack_size][0] = new_row;
-                    stack[stack_size][1] = new_col;
-                    stack_size++;
+                    visited_count++;
 
                     // Remove the wall between the current and new cell
                     int wall_row = (curr_row + new_row) / 2;
                     int wall_col = (curr_col + new_col) / 2;
                     maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
 
-                    // Mark the new cell as part of the path
-                    maze[new_row * size + new_col] = MAZE_PATH::EMPTY;
+                    // Debug: print the current location, new location, and wall location
+                    //printf("Current location: (%d, %d), New location: (%d, %d), Wall removed at: (%d, %d)\n",
+                    //    curr_row, curr_col, new_row, new_col, wall_row, wall_col);
+                    //print_maze_thread(maze, size);
+
+                    // Push the new cell onto the stack
+                    stack[stack_size][0] = new_row;
+                    stack[stack_size][1] = new_col;
+                    stack_size++;
 
                     path_found = true;
+                    is_first_move = false;  // Reset after the first move
+                    break;
                 }
             }
         }
 
-        // If no path was found, the cell is dead-end, continue backtracking
-        if (!path_found && stack_size > 0) {
-            continue;
+        // If no path was found, backtrack
+        if (!path_found) {
+            stack_size--;  // Pop from stack
+        }
+
+        // If all cells are visited, stop the DFS
+        if (visited_count >= total_cells) {
+            break;
         }
 
         iteration_count++;
@@ -229,8 +257,20 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
         //        blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
         //    print_maze_thread(maze, size); // Ensure this function works correctly within device code
         //}
+
+        maze[start_row * size + start_col] = MAZE_PATH::EMPTY; // mark the exit as 0
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 // Kernel function to generate individual mazes
 __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes) {
@@ -285,7 +325,7 @@ int main() {
     for (int i = 0; i < num_mazes; ++i) {
         std::cout << "Maze " << i << std::endl;
         print_maze(h_mazes + i * maze_size, N);
-        print_maze_debug(h_mazes + i * maze_size, N);
+        //print_maze_debug(h_mazes + i * maze_size, N);
         std::cout << std::endl;
     }
 
