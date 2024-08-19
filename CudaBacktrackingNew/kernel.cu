@@ -163,7 +163,8 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
     visited[start_row * size + start_col] = true;
     stack_size++;
 
-    int direction[4][2] = { {0, 2}, {2, 0}, {0, -2}, {-2, 0} }; // Up, Right, Down, Left
+    // Direction vectors for Up, Down, Left, Right
+    int direction[4][2] = { {-2, 0}, {2, 0}, {0, -2}, {0, 2} };
 
     int iteration_count = 0;  // Counter to prevent infinite loops
 
@@ -184,7 +185,7 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
 
         bool path_found = false;
 
-        // Explore neighbors in random order
+        // Explore all possible neighbors in random order
         for (int i = 0; i < 4; ++i) {
             int new_row = curr_row + direction[directions_to_try[i]][0];
             int new_col = curr_col + direction[directions_to_try[i]][1];
@@ -206,22 +207,12 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
                     maze[new_row * size + new_col] = MAZE_PATH::EMPTY;
 
                     path_found = true;
-                    break;
                 }
             }
         }
 
-        // Debug: print stack size and position
-        //if (blockIdx.x * blockDim.x + threadIdx.x == DEBUG_THREAD_ID) {
-        //    printf("Thread %d, Iteration %d: Stack size %d, Current position (%d, %d)\n",
-        //        blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
-        //    print_maze_thread(maze, N);
-        //}
-
-        // If no path was found, continue backtracking
-        if (!path_found) {
-            // To prevent pushing the same element multiple times,
-            // we ensure we don't push the same position unless it's valid
+        // If no path was found, the cell is dead-end, continue backtracking
+        if (!path_found && stack_size > 0) {
             continue;
         }
 
@@ -231,6 +222,13 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
             printf("Thread %d: Exiting after too many iterations\n", blockIdx.x * blockDim.x + threadIdx.x);
             break;
         }
+
+        // Debug: print stack size and position
+        //if (blockIdx.x * blockDim.x + threadIdx.x == 0) {
+        //    printf("Thread %d, Iteration %d: Stack size %d, Current position (%d, %d)\n",
+        //        blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
+        //    print_maze_thread(maze, size); // Ensure this function works correctly within device code
+        //}
     }
 }
 
