@@ -1,7 +1,7 @@
 ﻿#include <curand_kernel.h>
 #include <iostream>
 
-#define N 9  // Size of individual mazes (N x N)
+#define N 21  // Size of individual mazes (N x N)
 #define P 2  // Number of mazes in one row/column of the large maze
 #define MAX_SIZE (N * N)
 #define DEBUG_THREAD_ID 0  // Thread ID to debug
@@ -174,7 +174,7 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
 
         int directions_to_try[4] = { 0, 1, 2, 3 };
 
-        // Shuffle directions
+        // Shuffle directions to introduce randomness
         for (int i = 3; i > 0; --i) {
             int j = curand(localState) % (i + 1);
             int temp = directions_to_try[i];
@@ -189,6 +189,7 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
             int new_row = curr_row + direction[directions_to_try[i]][0];
             int new_col = curr_col + direction[directions_to_try[i]][1];
 
+            // Ensure we're not moving out of bounds
             if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
                 if (!visited[new_row * size + new_col]) {
                     visited[new_row * size + new_col] = true;
@@ -196,12 +197,13 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
                     stack[stack_size][1] = new_col;
                     stack_size++;
 
-                    // Remove the wall between current and new cell
-                    //int wall_col = (curr_col + new_col) / 2;
-                    //maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
+                    // Remove the wall between the current and new cell
                     int wall_row = (curr_row + new_row) / 2;
                     int wall_col = (curr_col + new_col) / 2;
                     maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
+
+                    // Mark the new cell as part of the path
+                    maze[new_row * size + new_col] = MAZE_PATH::EMPTY;
 
                     path_found = true;
                     break;
@@ -210,11 +212,11 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
         }
 
         // Debug: print stack size and position
-        if (blockIdx.x * blockDim.x + threadIdx.x == DEBUG_THREAD_ID) {
-            printf("Thread %d, Iteration %d: Stack size %d, Current position (%d, %d)\n",
-                blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
-            print_maze_thread(maze, N);
-        }
+        //if (blockIdx.x * blockDim.x + threadIdx.x == DEBUG_THREAD_ID) {
+        //    printf("Thread %d, Iteration %d: Stack size %d, Current position (%d, %d)\n",
+        //        blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
+        //    print_maze_thread(maze, N);
+        //}
 
         // If no path was found, continue backtracking
         if (!path_found) {
