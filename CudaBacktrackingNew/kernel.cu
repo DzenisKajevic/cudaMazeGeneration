@@ -1,5 +1,6 @@
 ﻿#include <curand_kernel.h>
 #include <iostream>
+#include <random>
 
 #define N 21  // Size of individual mazes (N x N)
 #define P 4  // Number of mazes in one row/column of the large maze
@@ -23,6 +24,49 @@ enum MAZE_PATH {
     PARTICLE = 0x5,
 };
 
+#include <vector>
+
+// Union-Find data structure to manage connected components
+struct UnionFind {
+    std::vector<int> parent;
+    std::vector<int> rank;
+
+    UnionFind(int n) {
+        parent.resize(n);
+        rank.resize(n, 0);
+        for (int i = 0; i < n; ++i) {
+            parent[i] = i;
+        }
+    }
+
+    int find(int x) {
+        if (parent[x] != x) {
+            parent[x] = find(parent[x]);
+        }
+        return parent[x];
+    }
+
+    bool union_sets(int x, int y) {
+        int rootX = find(x);
+        int rootY = find(y);
+
+        if (rootX != rootY) {
+            if (rank[rootX] > rank[rootY]) {
+                parent[rootY] = rootX;
+            }
+            else if (rank[rootX] < rank[rootY]) {
+                parent[rootX] = rootY;
+            }
+            else {
+                parent[rootY] = rootX;
+                rank[rootX]++;
+            }
+            return true;
+        }
+        return false;
+    }
+};
+
 __device__ void initialize_maze_cuda(MAZE_PATH* maze, int size, int* exit_row, int* exit_col, curandState* localState);
 __global__ void init_rng(curandState* state, unsigned long seed);
 __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes);
@@ -31,6 +75,7 @@ __global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int
 __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, int start_col, curandState* localState);
 __device__ void print_maze_thread(MAZE_PATH* maze, int size);
 
+void connect_mazes(MAZE_PATH* large_maze, int num_mazes, int small_size, int large_size, UnionFind& uf);
 void print_combined_maze(MAZE_PATH* large_maze, int large_size);
 void combine_mazes_cpu(MAZE_PATH* small_mazes, MAZE_PATH* large_maze);
 
@@ -237,7 +282,8 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
             break;
         }
 
-        maze[start_row * size + start_col] = MAZE_PATH::EMPTY; // mark the exit as 0
+        //maze[start_row * size + start_col] = MAZE_PATH::EMPTY; // mark the exit as 0
+        maze[start_row * size + start_col] = MAZE_PATH::WALL; // close the exit
     }
 }
 
@@ -296,6 +342,55 @@ __global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int
     }
 }
 
+
+// Function to connect neighboring mazes
+void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
+    int total_mazes = P * P;
+    int maze_size = N * N;
+
+    std::vector<std::pair<int, int>> directions = {
+        {0, -1}, {0, 1}, {-1, 0}, {1, 0}
+    };
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> maze_dist(0, total_mazes - 1);
+    std::uniform_int_distribution<> dir_dist(0, directions.size() - 1);
+
+    // Randomly connect neighboring mazes
+    while (uf.find(0) != uf.find(total_mazes - 1)) {
+        int maze_a = maze_dist(gen);
+        int dir_idx = dir_dist(gen);
+
+        int row_a = maze_a / P;
+        int col_a = maze_a % P;
+
+        int row_b = row_a + directions[dir_idx].first;
+        int col_b = col_a + directions[dir_idx].second;
+
+        // Ensure the neighboring maze is within bounds
+        if (row_b >= 0 && row_b < P && col_b >= 0 && col_b < P) {
+            int maze_b = row_b * P + col_b;
+
+            // If these mazes are not already connected, connect them
+            if (uf.union_sets(maze_a, maze_b)) {
+                // Calculate the wall positions to remove
+                int wall_row_a = row_a * N + N / 2 + directions[dir_idx].first * (N / 2);
+                int wall_col_a = col_a * N + N / 2 + directions[dir_idx].second * (N / 2);
+
+                int wall_row_b = wall_row_a + directions[dir_idx].first;
+                int wall_col_b = wall_col_a + directions[dir_idx].second;
+
+                // Remove the wall between the two mazes
+                large_maze[wall_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                large_maze[wall_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+            }
+        }
+    }
+}
+
+
+
 int parallel_combine() {
     int num_mazes = P * P;
     int maze_size = N * N;
@@ -339,6 +434,10 @@ int parallel_combine() {
     MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(large_size * sizeof(MAZE_PATH));
     cudaMemcpy(h_large_maze, d_large_maze, large_size * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
     cudaCheckError();
+
+    // Use Union-Find to connect the mazes on the CPU
+    UnionFind uf(num_mazes);
+    connect_mazes(h_large_maze, uf);
 
     // Print the combined large maze
     print_combined_maze(h_large_maze, LARGE_SIZE);
