@@ -4,9 +4,7 @@
 #define N 21  // Size of individual mazes (N x N)
 #define P 4  // Number of mazes in one row/column of the large maze
 #define MAX_SIZE (N * N)
-#define DEBUG_THREAD_ID 0  // Thread ID to debug
-
-// (N*P)*(N*P)
+#define LARGE_SIZE (N * P)  // Size of the large maze (N*P x N*P)
 
 #define cudaCheckError() {                               \
     cudaError_t e = cudaGetLastError();                    \
@@ -33,7 +31,7 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
 __device__ void print_maze_thread(MAZE_PATH* maze, int size);
 
 void print_maze(MAZE_PATH* maze, int size);
-void print_maze_debug(MAZE_PATH* maze, int size);
+void print_combined_maze(MAZE_PATH* large_maze, int large_size, int small_size, int num_mazes);
 
 __device__ void print_maze_thread(MAZE_PATH* maze, int size) {
     for (int row = 0; row < size; ++row) {
@@ -101,13 +99,38 @@ void print_maze(MAZE_PATH* maze, int size) {
     }
 }
 
-void print_maze_debug(MAZE_PATH* maze, int size) {
-    for (int i = 0; i < size * size; ++i) {
-        std::cout << static_cast<int>(maze[i]) << " ";
-        if ((i + 1) % size == 0) std::cout << std::endl;
+// Function to print the combined maze
+void print_combined_maze(MAZE_PATH* large_maze, int large_size, int small_size, int num_mazes) {
+    for (int row = 0; row < large_size; ++row) {
+        for (int col = 0; col < large_size; ++col) {
+            switch (large_maze[row * large_size + col]) {
+            case MAZE_PATH::EMPTY:
+                std::cout << " ";
+                break;
+            case MAZE_PATH::WALL:
+                std::cout << "#";
+                break;
+            case MAZE_PATH::EXIT:
+                std::cout << "E";
+                break;
+            case MAZE_PATH::SOLUTION:
+                std::cout << ".";
+                break;
+            case MAZE_PATH::START:
+                std::cout << "S";
+                break;
+            case MAZE_PATH::PARTICLE:
+                std::cout << "P";
+                break;
+            default:
+                std::cout << "?";
+                break;
+            }
+            std::cout << " ";
+        }
+        std::cout << std::endl;
     }
 }
-
 
 // Kernel function to initialize random states
 __global__ void init_rng(curandState* state, unsigned long seed) {
@@ -217,11 +240,6 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
                     int wall_col = (curr_col + new_col) / 2;
                     maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
 
-                    // Debug: print the current location, new location, and wall location
-                    //printf("Current location: (%d, %d), New location: (%d, %d), Wall removed at: (%d, %d)\n",
-                    //    curr_row, curr_col, new_row, new_col, wall_row, wall_col);
-                    //print_maze_thread(maze, size);
-
                     // Push the new cell onto the stack
                     stack[stack_size][0] = new_row;
                     stack[stack_size][1] = new_col;
@@ -251,26 +269,9 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
             break;
         }
 
-        // Debug: print stack size and position
-        //if (blockIdx.x * blockDim.x + threadIdx.x == 0) {
-        //    printf("Thread %d, Iteration %d: Stack size %d, Current position (%d, %d)\n",
-        //        blockIdx.x * blockDim.x + threadIdx.x, iteration_count, stack_size, curr_row, curr_col);
-        //    print_maze_thread(maze, size); // Ensure this function works correctly within device code
-        //}
-
         maze[start_row * size + start_col] = MAZE_PATH::EMPTY; // mark the exit as 0
     }
 }
-
-
-
-
-
-
-
-
-
-
 
 // Kernel function to generate individual mazes
 __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes) {
@@ -310,9 +311,13 @@ int main() {
     init_rng << <P, P >> > (d_states, time(NULL));
     cudaCheckError();
 
+    cudaDeviceSynchronize();
+
     // Generate the mazes
     generate_mazes << <P, P >> > (d_states, d_mazes);
     cudaCheckError();
+
+    cudaDeviceSynchronize();
 
     // Copy the mazes back to the host
     MAZE_PATH* h_mazes = (MAZE_PATH*)malloc(maze_size * num_mazes * sizeof(MAZE_PATH));
@@ -321,18 +326,29 @@ int main() {
 
     std::cout << "Mazes generated successfully!" << std::endl;
 
-    // Print the mazes
-    for (int i = 0; i < num_mazes; ++i) {
-        std::cout << "Maze " << i << std::endl;
-        print_maze(h_mazes + i * maze_size, N);
-        //print_maze_debug(h_mazes + i * maze_size, N);
-        std::cout << std::endl;
+    // Allocate memory for the combined large maze
+    MAZE_PATH* large_maze = (MAZE_PATH*)malloc(LARGE_SIZE * LARGE_SIZE * sizeof(MAZE_PATH));
+
+    // Combine the individual mazes into the large maze
+    for (int i = 0; i < P; ++i) {
+        for (int j = 0; j < P; ++j) {
+            // Copy the individual maze into the correct position in the large maze
+            for (int row = 0; row < N; ++row) {
+                for (int col = 0; col < N; ++col) {
+                    large_maze[(i * N + row) * LARGE_SIZE + (j * N + col)] = h_mazes[(i * P + j) * maze_size + row * N + col];
+                }
+            }
+        }
     }
+
+    // Print the combined large maze
+    print_combined_maze(large_maze, LARGE_SIZE, N, P);
 
     // Free resources
     cudaFree(d_mazes);
     cudaFree(d_states);
     free(h_mazes);
+    free(large_maze);
 
     return 0;
 }
