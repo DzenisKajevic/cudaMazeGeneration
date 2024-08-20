@@ -3,13 +3,22 @@
   C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\bin\nvcc.exe" -gencode=arch=compute_52,code=\"sm_52,compute_52\" --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.40.33807\bin\HostX64\x64" -x cu   -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\include"  -G   --keep-dir x64\Debug  -maxrregcount=0   --machine 64 --compile -cudart static  -g  -DWIN32 -DWIN64 -D_DEBUG -D_CONSOLE -D_MBCS -Xcompiler "/EHsc /W3 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/Fdx64\Debug\vc143.pdb" -o C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\x64\Debug\kernel.cu.obj "C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu" 
 C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(7): warning C4005: 'LARGE_SIZE': macro redefinition
 C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(7): warning C4005: 'LARGE_SIZE': macro redefinition
-C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(203): warning #177-D: variable "is_exit" was declared but never referenced
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(171): warning #177-D: variable "is_exit" was declared but never referenced
             bool is_exit = (maze[curr_row * size + curr_col] == MAZE_PATH::EXIT);
                  ^
   
   Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
   
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(268): warning #177-D: variable "maze_size" was declared but never referenced
+        int maze_size = 21 * 21;
+            ^
+  
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(359): warning #177-D: variable "large_size" was declared but never referenced
+        int large_size = (21 * 4) * (21 * 4);
+            ^
+  
   kernel.cu
-  tmpxft_00005680_00000000-7_kernel.cudafe1.cpp
-C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(311): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
+  tmpxft_00005760_00000000-7_kernel.cudafe1.cpp
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(313): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(370): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
   CudaBacktrackingNew.vcxproj -> C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\x64\Debug\CudaBacktrackingNew.exe

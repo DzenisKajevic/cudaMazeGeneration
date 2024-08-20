@@ -26,12 +26,13 @@ enum MAZE_PATH {
 __device__ void initialize_maze_cuda(MAZE_PATH* maze, int size, int* exit_row, int* exit_col, curandState* localState);
 __global__ void init_rng(curandState* state, unsigned long seed);
 __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes);
+__global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int small_size, int large_size, int num_mazes_per_side);
 
 __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, int start_col, curandState* localState);
 __device__ void print_maze_thread(MAZE_PATH* maze, int size);
 
-void print_maze(MAZE_PATH* maze, int size);
-void print_combined_maze(MAZE_PATH* large_maze, int large_size, int small_size, int num_mazes);
+void print_combined_maze(MAZE_PATH* large_maze, int large_size);
+void combine_mazes_cpu(MAZE_PATH* small_mazes, MAZE_PATH* large_maze);
 
 __device__ void print_maze_thread(MAZE_PATH* maze, int size) {
     for (int row = 0; row < size; ++row) {
@@ -66,41 +67,8 @@ __device__ void print_maze_thread(MAZE_PATH* maze, int size) {
     printf("\n");
 }
 
-// Function to print the maze
-void print_maze(MAZE_PATH* maze, int size) {
-    for (int row = 0; row < size; ++row) {
-        for (int col = 0; col < size; ++col) {
-            switch (maze[row * size + col]) {
-            case MAZE_PATH::EMPTY:
-                std::cout << " ";
-                break;
-            case MAZE_PATH::WALL:
-                std::cout << "#";
-                break;
-            case MAZE_PATH::EXIT:
-                std::cout << "E";
-                break;
-            case MAZE_PATH::SOLUTION:
-                std::cout << ".";
-                break;
-            case MAZE_PATH::START:
-                std::cout << "S";
-                break;
-            case MAZE_PATH::PARTICLE:
-                std::cout << "P";
-                break;
-            default:
-                std::cout << "?";
-                break;
-            }
-            std::cout << " ";
-        }
-        std::cout << std::endl;
-    }
-}
-
 // Function to print the combined maze
-void print_combined_maze(MAZE_PATH* large_maze, int large_size, int small_size, int num_mazes) {
+void print_combined_maze(MAZE_PATH* large_maze, int large_size) {
     for (int row = 0; row < large_size; ++row) {
         for (int col = 0; col < large_size; ++col) {
             switch (large_maze[row * large_size + col]) {
@@ -295,9 +263,43 @@ __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes) {
     globalState[idx] = localState;
 }
 
-int main() {
+// Sequential CPU function to combine individual mazes into a large maze
+void combine_mazes_cpu(MAZE_PATH* small_mazes, MAZE_PATH* large_maze) {
+    int maze_size = N * N;
+    // Iterate over each maze block
+    for (int i = 0; i < P; ++i) {
+        for (int j = 0; j < P; ++j) {
+            // Copy the individual maze into the correct position in the large maze
+            for (int row = 0; row < N; ++row) {
+                for (int col = 0; col < N; ++col)
+                    large_maze[(i * N + row) * LARGE_SIZE + (j * N + col)] =
+                    small_mazes[(i * P + j) * MAX_SIZE + row * N + col];
+            }
+        }
+    }
+}
+
+
+
+
+// Kernel function to combine individual mazes into a large maze
+__global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int small_size, int large_size, int num_mazes_per_side) {
+    int small_row = blockIdx.y * blockDim.y + threadIdx.y;
+    int small_col = blockIdx.x * blockDim.x + threadIdx.x;
+    int maze_index = blockIdx.z;
+
+    if (small_row < small_size && small_col < small_size) {
+        int large_row = (maze_index / num_mazes_per_side) * small_size + small_row;
+        int large_col = (maze_index % num_mazes_per_side) * small_size + small_col;
+
+        large_maze[large_row * large_size + large_col] = small_mazes[maze_index * small_size * small_size + small_row * small_size + small_col];
+    }
+}
+
+int parallel_combine() {
     int num_mazes = P * P;
     int maze_size = N * N;
+    int large_size = LARGE_SIZE * LARGE_SIZE;
 
     // Allocate memory for the mazes on the GPU
     MAZE_PATH* d_mazes;
@@ -319,36 +321,88 @@ int main() {
 
     cudaDeviceSynchronize();
 
-    // Copy the mazes back to the host
-    MAZE_PATH* h_mazes = (MAZE_PATH*)malloc(maze_size * num_mazes * sizeof(MAZE_PATH));
-    cudaMemcpy(h_mazes, d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
+    // Allocate memory for the combined large maze on the GPU
+    MAZE_PATH* d_large_maze;
+    cudaMalloc(&d_large_maze, large_size * sizeof(MAZE_PATH));
+
+    // Define block and grid dimensions for combining mazes
+    dim3 blockDim(N, N, 1);
+    dim3 gridDim(P, P, num_mazes);
+
+    // Combine the mazes on the GPU
+    combine_mazes << <gridDim, blockDim >> > (d_mazes, d_large_maze, N, LARGE_SIZE, P);
     cudaCheckError();
 
-    std::cout << "Mazes generated successfully!" << std::endl;
+    cudaDeviceSynchronize();
 
-    // Allocate memory for the combined large maze
-    MAZE_PATH* large_maze = (MAZE_PATH*)malloc(LARGE_SIZE * LARGE_SIZE * sizeof(MAZE_PATH));
-
-    // Combine the individual mazes into the large maze
-    for (int i = 0; i < P; ++i) {
-        for (int j = 0; j < P; ++j) {
-            // Copy the individual maze into the correct position in the large maze
-            for (int row = 0; row < N; ++row) {
-                for (int col = 0; col < N; ++col) {
-                    large_maze[(i * N + row) * LARGE_SIZE + (j * N + col)] = h_mazes[(i * P + j) * maze_size + row * N + col];
-                }
-            }
-        }
-    }
+    // Copy the combined large maze back to the host
+    MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(large_size * sizeof(MAZE_PATH));
+    cudaMemcpy(h_large_maze, d_large_maze, large_size * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
+    cudaCheckError();
 
     // Print the combined large maze
-    print_combined_maze(large_maze, LARGE_SIZE, N, P);
+    print_combined_maze(h_large_maze, LARGE_SIZE);
 
     // Free resources
     cudaFree(d_mazes);
     cudaFree(d_states);
-    free(h_mazes);
-    free(large_maze);
+    cudaFree(d_large_maze);
+    free(h_large_maze);
 
+    return 0;
+}
+
+// sequential combination of mazes
+int seq_combine() {
+    int num_mazes = P * P;
+    int maze_size = N * N;
+    int large_size = LARGE_SIZE * LARGE_SIZE;
+
+    // Allocate memory for the mazes on the GPU
+    MAZE_PATH* d_mazes;
+    cudaMalloc(&d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH));
+
+    // Allocate memory for RNG states on the GPU
+    curandState* d_states;
+    cudaMalloc(&d_states, num_mazes * sizeof(curandState));
+
+    // Initialize the RNG states
+    init_rng << <P, P >> > (d_states, time(NULL));
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
+
+    // Generate the mazes
+    generate_mazes << <P, P >> > (d_states, d_mazes);
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
+
+    // Allocate memory for the small mazes on the CPU
+    MAZE_PATH* h_mazes = (MAZE_PATH*)malloc(maze_size * num_mazes * sizeof(MAZE_PATH));
+
+    // Copy the small mazes from GPU to CPU
+    cudaMemcpy(h_mazes, d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
+    cudaCheckError();
+
+    // Allocate memory for the combined large maze
+    MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(LARGE_SIZE * LARGE_SIZE * sizeof(MAZE_PATH));
+
+    combine_mazes_cpu(h_mazes, h_large_maze);
+
+    // Print the combined large maze
+    print_combined_maze(h_large_maze, LARGE_SIZE);
+
+    // Free resources
+    cudaFree(d_mazes);
+    cudaFree(d_states);
+    free(h_large_maze);
+
+    return 0;
+}
+
+int main() {
+    parallel_combine();
+    //seq_combine();
     return 0;
 }
