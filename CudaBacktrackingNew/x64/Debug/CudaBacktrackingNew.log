@@ -17,17 +17,17 @@ C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrac
         int maze_size = 21 * 21;
             ^
   
-C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(458): warning #177-D: variable "large_size" was declared but never referenced
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(525): warning #177-D: variable "large_size" was declared but never referenced
         int large_size = (21 * 4) * (21 * 4);
             ^
   
   kernel.cu
-  tmpxft_00005ca0_00000000-7_kernel.cudafe1.cpp
+  tmpxft_00004920_00000000-7_kernel.cudafe1.cpp
 C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(358): warning C4267: 'argument': conversion from 'size_t' to '_Ty', possible loss of data
           with
           [
               _Ty=int
           ]
-C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(408): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
-C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(469): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(475): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
+C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\CudaBacktrackingNew\kernel.cu(536): warning C4244: 'argument': conversion from 'time_t' to 'unsigned long', possible loss of data
   CudaBacktrackingNew.vcxproj -> C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\x64\Debug\CudaBacktrackingNew.exe

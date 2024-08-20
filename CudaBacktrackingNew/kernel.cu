@@ -357,6 +357,8 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
     std::uniform_int_distribution<> maze_dist(0, total_mazes - 1);
     std::uniform_int_distribution<> dir_dist(0, directions.size() - 1);
 
+    std::vector<bool> connected(total_mazes, false);  // Track if a maze was connected
+
     // Randomly connect neighboring mazes
     while (uf.find(0) != uf.find(total_mazes - 1)) {
         int maze_a = maze_dist(gen);
@@ -368,12 +370,21 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
         int row_b = row_a + directions[dir_idx].first;
         int col_b = col_a + directions[dir_idx].second;
 
-        // Ensure the neighboring maze is within bounds
-        if (row_b >= 0 && row_b < P && col_b >= 0 && col_b < P) {
+        // Ensure the neighboring maze is within bounds and not on restricted borders
+        if (row_b >= 0 && row_b < P && col_b >= 0 && col_b < P &&
+            !(col_a == 0 && directions[dir_idx].first == -1) &&
+            !(col_a == P - 1 && directions[dir_idx].first == 1) &&
+            !(row_a == 0 && directions[dir_idx].second == -1) &&
+            !(row_a == P - 1 && directions[dir_idx].second == 1)) {
+
             int maze_b = row_b * P + col_b;
 
             // If these mazes are not already connected, connect them
             if (uf.union_sets(maze_a, maze_b)) {
+                // Mark both mazes as connected
+                connected[maze_a] = true;
+                connected[maze_b] = true;
+
                 // Calculate the wall positions to remove
                 int wall_row_a = row_a * N + N / 2 + directions[dir_idx].first * (N / 2);
                 int wall_col_a = col_a * N + N / 2 + directions[dir_idx].second * (N / 2);
@@ -381,9 +392,65 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
                 int wall_row_b = wall_row_a + directions[dir_idx].first;
                 int wall_col_b = wall_col_a + directions[dir_idx].second;
 
+                // Debug: Print the maze indices and the exact positions within the large maze
+                std::cout << "Connected maze " << maze_a << " and " << maze_b
+                    << " at grid (" << row_a << ", " << col_a << ") and ("
+                    << row_b << ", " << col_b << ")"
+                    << " with positions (" << wall_row_a << ", " << wall_col_a
+                    << ") and (" << wall_row_b << ", " << wall_col_b << ") in the large maze.\n";
+
                 // Remove the wall between the two mazes
                 large_maze[wall_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
                 large_maze[wall_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+            }
+        }
+        else {
+            // Debug: Print skipping invalid boundary connection
+            std::cout << "Skipping invalid boundary connection between maze " << maze_a << " and outside boundaries.\n";
+        }
+    }
+
+    // Identify and print mazes that were not connected during the first pass
+    for (int i = 0; i < total_mazes; ++i) {
+        if (!connected[i]) {
+            std::cout << "Maze " << i << " was not connected during the initial pass.\n";
+        }
+    }
+
+    // Final pass to ensure all mazes are connected
+    for (int maze_a = 0; maze_a < total_mazes; ++maze_a) {
+        if (!connected[maze_a]) {
+            for (const auto& dir : directions) {
+                int row_a = maze_a / P;
+                int col_a = maze_a % P;
+
+                int row_b = row_a + dir.first;
+                int col_b = col_a + dir.second;
+
+                if (row_b >= 0 && row_b < P && col_b >= 0 && col_b < P) {
+                    int maze_b = row_b * P + col_b;
+
+                    if (uf.find(maze_a) != uf.find(maze_b)) {
+                        if (uf.union_sets(maze_a, maze_b)) {
+                            // Debug: Print forced connection details
+                            std::cout << "Forced connection between maze " << maze_a << " and " << maze_b
+                                << " at grid (" << row_a << ", " << col_a << ") and ("
+                                << row_b << ", " << col_b << ") in final pass.\n";
+
+                            int wall_row_a = row_a * N + N / 2 + dir.first * (N / 2);
+                            int wall_col_a = col_a * N + N / 2 + dir.second * (N / 2);
+
+                            int wall_row_b = wall_row_a + dir.first;
+                            int wall_col_b = wall_col_a + dir.second;
+
+                            large_maze[wall_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                            large_maze[wall_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+
+                            connected[maze_a] = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
