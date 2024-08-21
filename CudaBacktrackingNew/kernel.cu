@@ -4,7 +4,8 @@
 #include <chrono>
 
 
-// 101 * 101 * 180 * 180 = equivalent to 20200x20200 maze
+// Sequential single maze generation took 199877 ms
+// 101 * 101 * 180 * 180 = equivalent to 18180x18180 maze (18181 since it needs to be odd)
 // 101 * 101 * 180 * 180 * 4 Bytes = 1,322,049,600 Bytes = 1.23 GB
 
 #define N 101  // Size of individual mazes (N x N)
@@ -488,7 +489,156 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
     }
 }
 
+// Sequential function to initialize the maze on the CPU
+void initialize_maze_cpu(std::vector<MAZE_PATH>& maze, int size, int& exit_row, int& exit_col, std::mt19937& rng) {
+    maze.resize(size * size, MAZE_PATH::WALL);
 
+    for (int row = 1; row < size; row += 2) {
+        for (int col = 1; col < size; col += 2) {
+            maze[row * size + col] = MAZE_PATH::EMPTY;
+        }
+    }
+
+    // Randomly choose a border for the exit (0: top/bottom, 1: left/right)
+    std::uniform_int_distribution<int> border_choice_dist(0, 1);
+    std::uniform_int_distribution<int> coord_dist(0, (size / 2) - 1);
+
+    int border_choice = border_choice_dist(rng);
+
+    if (border_choice == 0) {
+        exit_row = (coord_dist(rng) * 2 + 1);
+        exit_col = (rng() % 2 == 0) ? 0 : size - 1;
+    }
+    else {
+        exit_row = (rng() % 2 == 0) ? 0 : size - 1;
+        exit_col = (coord_dist(rng) * 2 + 1);
+    }
+
+    maze[exit_row * size + exit_col] = MAZE_PATH::EXIT;
+}
+
+// Sequential DFS Maze Generation with Backtracking on the CPU
+void dfs_maze_generation_cpu(std::vector<MAZE_PATH>& maze, int size, int start_row, int start_col, std::mt19937& rng) {
+    std::vector<std::pair<int, int>> stack;
+    stack.emplace_back(start_row, start_col);
+
+    std::vector<bool> visited(size * size, false);
+    visited[start_row * size + start_col] = true;
+
+    int direction[4][2] = { {-2, 0}, {2, 0}, {0, -2}, {0, 2} };
+    int exit_direction[4][2] = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+
+    bool is_first_move = true;
+
+    while (!stack.empty()) {
+        // Unpack the current row and column from the stack
+        int curr_row = stack.back().first;
+        int curr_col = stack.back().second;
+        stack.pop_back();
+
+        std::vector<int> directions_to_try = { 0, 1, 2, 3 };
+        std::shuffle(directions_to_try.begin(), directions_to_try.end(), rng);
+
+        bool path_found = false;
+
+        for (int i : directions_to_try) {
+            int new_row, new_col;
+
+            if (is_first_move) {
+                new_row = curr_row + exit_direction[i][0];
+                new_col = curr_col + exit_direction[i][1];
+            }
+            else {
+                new_row = curr_row + direction[i][0];
+                new_col = curr_col + direction[i][1];
+            }
+
+            if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
+                if (!visited[new_row * size + new_col]) {
+                    visited[new_row * size + new_col] = true;
+
+                    int wall_row = (curr_row + new_row) / 2;
+                    int wall_col = (curr_col + new_col) / 2;
+                    maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
+
+                    stack.emplace_back(new_row, new_col);
+                    path_found = true;
+                    is_first_move = false;
+                    break;
+                }
+            }
+        }
+
+        if (!path_found) {
+            is_first_move = true;  // Allow backtracking to reconsider directions
+        }
+    }
+
+    // Additional pass to ensure all cells are visited
+    for (int i = 1; i < size; i += 2) {
+        for (int j = 1; j < size; j += 2) {
+            if (!visited[i * size + j]) {
+                stack.emplace_back(i, j);
+                visited[i * size + j] = true;
+                is_first_move = true;
+                while (!stack.empty()) {
+                    int curr_row = stack.back().first;
+                    int curr_col = stack.back().second;
+                    stack.pop_back();
+
+                    std::vector<int> directions_to_try = { 0, 1, 2, 3 };
+                    std::shuffle(directions_to_try.begin(), directions_to_try.end(), rng);
+
+                    for (int dir : directions_to_try) {
+                        int new_row = curr_row + direction[dir][0];
+                        int new_col = curr_col + direction[dir][1];
+
+                        if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
+                            if (!visited[new_row * size + new_col]) {
+                                visited[new_row * size + new_col] = true;
+
+                                int wall_row = (curr_row + new_row) / 2;
+                                int wall_col = (curr_col + new_col) / 2;
+                                maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
+
+                                stack.emplace_back(new_row, new_col);
+                                is_first_move = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!is_first_move) {
+                        is_first_move = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+int seq_single_maze() {
+    int maze_size = 18181;
+    auto start = std::chrono::high_resolution_clock::now();
+    std::vector<MAZE_PATH> maze;
+	int exit_row, exit_col;
+
+	std::random_device rd;
+	std::mt19937 gen(rd());
+
+	initialize_maze_cpu(maze, maze_size, exit_row, exit_col, gen);
+	dfs_maze_generation_cpu(maze, maze_size, exit_row, exit_col, gen);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+
+    std::cout << "Sequential single maze generation took " << elapsed.count() << " ms" << std::endl;
+
+    //print_combined_maze(maze.data(), 18180);
+
+	return 0;
+
+}
 
 
 int parallel_combine() {
@@ -684,6 +834,9 @@ int main() {
 
     std::cout << std::endl << std::endl << "________Running sequential version________" << std::endl << std::endl;
     seq_combine();
+
+    std::cout << std::endl << std::endl << "________Running sequential single maze generation________" << std::endl << std::endl;
+    seq_single_maze();
 
     return 0;
 }
