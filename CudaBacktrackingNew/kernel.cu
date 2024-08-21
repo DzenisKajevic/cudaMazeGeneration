@@ -681,7 +681,7 @@ int parallel_combine() {
     //dim3 blockDim(N, N, 1);
     //dim3 gridDim(P, P, num_mazes);
 
-    int blockSize = 32;  // 32x32 block size
+    int blockSize = 16;  // 32x32 block size
     dim3 blockDim(blockSize, blockSize, 1);
     int gridX = (N + blockSize - 1) / blockSize;
     int gridY = (N + blockSize - 1) / blockSize;
