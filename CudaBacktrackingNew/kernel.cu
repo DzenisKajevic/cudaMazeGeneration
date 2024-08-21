@@ -3,12 +3,14 @@
 #include <random>
 #include <chrono>
 
-// 101 * 101 * 200 * 200 * 4 Bytes = 1,632,160,000 Bytes = 1.6 GB 
+
+// 101 * 101 * 180 * 180 = equivalent to 20200x20200 maze
+// 101 * 101 * 180 * 180 * 4 Bytes = 1,322,049,600 Bytes = 1.23 GB
 
 #define N 101  // Size of individual mazes (N x N)
-#define P 185 // Number of mazes in one row/column of the large maze
+#define P 180 // Number of mazes in one row/column of the large maze
 #define MAX_SIZE (N * N)
-#define LARGE_SIZE (N * P)  // Size of the large maze (N*P x N*P)
+#define LARGE_MAZE_SIZE (N * P)  // Size of the large maze (N*P x N*P)
 
 #define cudaCheckError() {                               \
     cudaError_t e = cudaGetLastError();                    \
@@ -216,7 +218,6 @@ __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, in
         int curr_row = stack[stack_size - 1][0];
         int curr_col = stack[stack_size - 1][1];
 
-        bool is_exit = (maze[curr_row * size + curr_col] == MAZE_PATH::EXIT);
         int directions_to_try[4] = { 0, 1, 2, 3 };
 
         // Shuffle directions to introduce randomness
@@ -314,14 +315,13 @@ __global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes) {
 
 // Sequential CPU function to combine individual mazes into a large maze
 void combine_mazes_cpu(MAZE_PATH* small_mazes, MAZE_PATH* large_maze) {
-    int maze_size = N * N;
     // Iterate over each maze block
     for (int i = 0; i < P; ++i) {
         for (int j = 0; j < P; ++j) {
             // Copy the individual maze into the correct position in the large maze
             for (int row = 0; row < N; ++row) {
                 for (int col = 0; col < N; ++col)
-                    large_maze[(i * N + row) * LARGE_SIZE + (j * N + col)] =
+                    large_maze[(i * N + row) * LARGE_MAZE_SIZE + (j * N + col)] =
                     small_mazes[(i * P + j) * MAX_SIZE + row * N + col];
             }
         }
@@ -349,7 +349,6 @@ __global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int
 // Function to connect neighboring mazes
 void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
     int total_mazes = P * P;
-    int maze_size = N * N;
 
     std::vector<std::pair<int, int>> directions = {
         {0, -1}, {0, 1}, {-1, 0}, {1, 0}
@@ -358,7 +357,7 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> maze_dist(0, total_mazes - 1);
-    std::uniform_int_distribution<> dir_dist(0, directions.size() - 1);
+    std::uniform_int_distribution<> dir_dist(0, static_cast<int>(directions.size()) - 1);
 
     // Randomly connect neighboring mazes
     while (uf.find(0) != uf.find(total_mazes - 1)) {
@@ -385,36 +384,36 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
                 int wall_col_b = wall_col_a + directions[dir_idx].second;
 
                 // Remove the wall between the two mazes
-                large_maze[wall_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
-                large_maze[wall_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+                large_maze[wall_row_a * LARGE_MAZE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                large_maze[wall_row_b * LARGE_MAZE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
 
                 // Clear an additional cell adjacent to the connection point
                 if (directions[dir_idx].first != 0) {  // Vertical connection
                     if (directions[dir_idx].first == -1) {  // maze_b is above maze_a
                         int clear_row_a = wall_row_a + 1;
                         int clear_row_b = wall_row_b - 1;
-                        large_maze[clear_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
-                        large_maze[clear_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+                        large_maze[clear_row_a * LARGE_MAZE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                        large_maze[clear_row_b * LARGE_MAZE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
                     }
                     else {  // maze_b is below maze_a
                         int clear_row_a = wall_row_a - 1;
                         int clear_row_b = wall_row_b + 1;
-                        large_maze[clear_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
-                        large_maze[clear_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+                        large_maze[clear_row_a * LARGE_MAZE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                        large_maze[clear_row_b * LARGE_MAZE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
                     }
                 }
                 else {  // Horizontal connection
                     if (directions[dir_idx].second == -1) {  // maze_b is to the left of maze_a
                         int clear_col_a = wall_col_a + 1;
                         int clear_col_b = wall_col_b - 1;
-                        large_maze[wall_row_a * LARGE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
-                        large_maze[wall_row_b * LARGE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
+                        large_maze[wall_row_a * LARGE_MAZE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
+                        large_maze[wall_row_b * LARGE_MAZE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
                     }
                     else {  // maze_b is to the right of maze_a
                         int clear_col_a = wall_col_a - 1;
                         int clear_col_b = wall_col_b + 1;
-                        large_maze[wall_row_a * LARGE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
-                        large_maze[wall_row_b * LARGE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
+                        large_maze[wall_row_a * LARGE_MAZE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
+                        large_maze[wall_row_b * LARGE_MAZE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
                     }
                 }
 
@@ -446,36 +445,36 @@ void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf) {
                         int wall_col_b = wall_col_a + dir.second;
 
                         // Remove the wall between the two mazes
-                        large_maze[wall_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
-                        large_maze[wall_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+                        large_maze[wall_row_a * LARGE_MAZE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                        large_maze[wall_row_b * LARGE_MAZE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
 
                         // Clear an additional cell adjacent to the connection point
                         if (dir.first != 0) {  // Vertical connection
                             if (dir.first == -1) {  // maze_b is above maze_a
                                 int clear_row_a = wall_row_a + 1;
                                 int clear_row_b = wall_row_b - 1;
-                                large_maze[clear_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
-                                large_maze[clear_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+                                large_maze[clear_row_a * LARGE_MAZE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                                large_maze[clear_row_b * LARGE_MAZE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
                             }
                             else {  // maze_b is below maze_a
                                 int clear_row_a = wall_row_a - 1;
                                 int clear_row_b = wall_row_b + 1;
-                                large_maze[clear_row_a * LARGE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
-                                large_maze[clear_row_b * LARGE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
+                                large_maze[clear_row_a * LARGE_MAZE_SIZE + wall_col_a] = MAZE_PATH::EMPTY;
+                                large_maze[clear_row_b * LARGE_MAZE_SIZE + wall_col_b] = MAZE_PATH::EMPTY;
                             }
                         }
                         else {  // Horizontal connection
                             if (dir.second == -1) {  // maze_b is to the left of maze_a
                                 int clear_col_a = wall_col_a + 1;
                                 int clear_col_b = wall_col_b - 1;
-                                large_maze[wall_row_a * LARGE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
-                                large_maze[wall_row_b * LARGE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
+                                large_maze[wall_row_a * LARGE_MAZE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
+                                large_maze[wall_row_b * LARGE_MAZE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
                             }
                             else {  // maze_b is to the right of maze_a
                                 int clear_col_a = wall_col_a - 1;
                                 int clear_col_b = wall_col_b + 1;
-                                large_maze[wall_row_a * LARGE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
-                                large_maze[wall_row_b * LARGE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
+                                large_maze[wall_row_a * LARGE_MAZE_SIZE + clear_col_a] = MAZE_PATH::EMPTY;
+                                large_maze[wall_row_b * LARGE_MAZE_SIZE + clear_col_b] = MAZE_PATH::EMPTY;
                             }
                         }
 
@@ -497,7 +496,7 @@ int parallel_combine() {
 
     int num_mazes = P * P;
     int maze_size = N * N;
-    int large_size = LARGE_SIZE * LARGE_SIZE;
+    int large_size = LARGE_MAZE_SIZE * LARGE_MAZE_SIZE;
 
     // Allocate memory for the mazes on the GPU
     MAZE_PATH* d_mazes;
@@ -508,7 +507,7 @@ int parallel_combine() {
     cudaMalloc(&d_states, num_mazes * sizeof(curandState));
 
     // Initialize the RNG states
-    init_rng << <P, P >> > (d_states, time(NULL));
+    init_rng << <P, P >> > (d_states, static_cast<unsigned long>(time(NULL)));
     cudaCheckError();
 
     cudaDeviceSynchronize();
@@ -539,7 +538,7 @@ int parallel_combine() {
     dim3 gridDim(gridX, gridY, P * P);
 
     // Combine the mazes on the GPU
-    combine_mazes << <gridDim, blockDim >> > (d_mazes, d_large_maze, N, LARGE_SIZE, P);
+    combine_mazes << <gridDim, blockDim >> > (d_mazes, d_large_maze, N, LARGE_MAZE_SIZE, P);
     cudaCheckError();
 
     cudaDeviceSynchronize();
@@ -570,8 +569,10 @@ int parallel_combine() {
 
     std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
 
+    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
     // Print the combined large maze
-    //print_combined_maze(h_large_maze, LARGE_SIZE);
+    //print_combined_maze(h_large_maze, LARGE_MAZE_SIZE);
 
     // Free resources
     cudaFree(d_mazes);
@@ -589,7 +590,6 @@ int seq_combine() {
 
     int num_mazes = P * P;
     int maze_size = N * N;
-    int large_size = LARGE_SIZE * LARGE_SIZE;
 
     // Allocate memory for the mazes on the GPU
     MAZE_PATH* d_mazes;
@@ -600,7 +600,7 @@ int seq_combine() {
     cudaMalloc(&d_states, num_mazes * sizeof(curandState));
 
     // Initialize the RNG states
-    init_rng << <P, P >> > (d_states, time(NULL));
+    init_rng << <P, P >> > (d_states, static_cast<unsigned long>(time(NULL)));
     cudaCheckError();
 
     cudaDeviceSynchronize();
@@ -624,7 +624,7 @@ int seq_combine() {
     cudaCheckError();
 
     // Allocate memory for the combined large maze
-    MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(LARGE_SIZE * LARGE_SIZE * sizeof(MAZE_PATH));
+    MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(LARGE_MAZE_SIZE * LARGE_MAZE_SIZE * sizeof(MAZE_PATH));
 
     auto endDataTransfer = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsedDataTransfer = endDataTransfer - endGeneration;
@@ -648,8 +648,11 @@ int seq_combine() {
 
     std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
 
+    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
+
     // Print the combined large maze
-    //print_combined_maze(h_large_maze, LARGE_SIZE);
+    //print_combined_maze(h_large_maze, LARGE_MAZE_SIZE);
 
     // Free resources
     cudaFree(d_mazes);

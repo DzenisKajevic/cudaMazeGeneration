@@ -3,3 +3,6 @@ nvcc -g -o exename kernel.cu
 
 // memcheck
 compute-sanitizer --tool memcheck exename
+
+// check GPU status (incl. memory) - refreshes every second
+nvidia-smi -l 1
