@@ -194,3 +194,71 @@ Maintain a Single Connected Component: By connecting mazes without forming cycle
 Why Union-Find?
 When connecting mazes, we want to ensure that we don't accidentally create multiple paths between any two points, which would violate the "perfect maze" property. Union-Find helps us track which mazes are already connected, so we can carefully manage the connections to maintain a single path between any two points.
 """
+
+________________________________________________
+
+BLOCK SIZES FOR 101x101 MAZES:
+
+
+Let's break down the comparison between using a 16x16 block size and a 32x32 block size on a grid of size 101x101.
+
+Grid and Block Configuration
+For 16x16 Block Size:
+Grid dimensions:
+gridX = (101 + 16 - 1) / 16 = 7
+gridY = (101 + 16 - 1) / 16 = 7
+The grid is 7x7 blocks.
+Thread Utilization:
+Each block has 256 threads (16x16).
+The grid covers a 112x112 area, with the last block in each dimension (x and y) having extra threads that don't correspond to any maze cells.
+Overhead:
+The last block will have 15 extra threads in each dimension that do not perform any useful work (15x15=225 unused threads per block in the corner).
+For 32x32 Block Size:
+Grid dimensions:
+
+gridX = (101 + 32 - 1) / 32 = 4
+gridY = (101 + 32 - 1) / 32 = 4
+The grid is 4x4 blocks.
+Thread Utilization:
+
+Each block has 1024 threads (32x32).
+The grid covers a 128x128 area, with the last block in each dimension (x and y) having extra threads that don't correspond to any maze cells.
+Overhead:
+The last block will have 31 extra threads in each dimension that do not perform any useful work (31x31=961 unused threads per block in the corner).
+Overhead Comparison
+16x16 block size:
+Each block can have up to 225 unused threads in the worst-case scenario (the corner block).
+The overall thread count is 7x7x256 = 12,544 threads, with a higher proportion of active threads.
+32x32 block size:
+Each block can have up to 961 unused threads in the worst-case scenario (the corner block).
+The overall thread count is 4x4x1024 = 16,384 threads, with a higher proportion of inactive threads in the last block.
+Advantages and Disadvantages
+16x16 Block Size:
+Advantages:
+
+Better Thread Utilization:
+Less thread wastage per block, especially for grids with dimensions not divisible by 32.
+Flexibility:
+Smaller blocks can provide better flexibility for covering the grid with minimal wastage.
+Disadvantages:
+
+Higher Grid Size:
+More blocks are required to cover the entire grid, which may increase the overhead in terms of block scheduling and memory accesses.
+32x32 Block Size:
+Advantages:
+
+Lower Grid Size:
+Fewer blocks are needed to cover the grid, which can reduce overhead related to block scheduling.
+Memory Access Coalescing:
+Larger blocks may provide better memory access patterns, leading to improved coalescing for certain memory operations, assuming alignment.
+Disadvantages:
+
+Higher Thread Wastage:
+Significant thread wastage for non-divisible grid sizes, leading to higher overhead per block, especially in the corner blocks.
+Potential for Warp Divergence:
+With more threads per block, there's a higher chance for divergence if the threads within a warp execute different paths of code.
+Which One is Better Overall?
+For N = 101, the 16x16 block size might be better overall due to lower thread wastage, especially when the grid size is not a perfect multiple of 32. The increased number of blocks (7x7 vs. 4x4) introduces some additional overhead in terms of scheduling, but this is typically outweighed by the better thread utilization.
+32x32 block size is still a valid choice if the problem is compute-bound and memory access coalescing is critical. However, for grids where the dimensions are not multiples of 32, the thread wastage could reduce overall efficiency.
+Conclusion:
+For N = 101, 16x16 is likely the better choice because it provides better thread utilization with minimal overhead, even though it requires more blocks to cover the grid. The reduced thread wastage outweighs the additional scheduling overhead in most scenarios.

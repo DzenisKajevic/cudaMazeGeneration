@@ -2,6 +2,7 @@
 #include <iostream>
 #include <random>
 #include <chrono>
+#include <tuple> 
 
 
 // Sequential single maze generation took 199877 ms
@@ -53,6 +54,49 @@ struct UnionFind {
     }
 
     bool union_sets(int x, int y) {
+        int rootX = find(x);
+        int rootY = find(y);
+
+        if (rootX != rootY) {
+            if (rank[rootX] > rank[rootY]) {
+                parent[rootY] = rootX;
+            }
+            else if (rank[rootX] < rank[rootY]) {
+                parent[rootX] = rootY;
+            }
+            else {
+                parent[rootY] = rootX;
+                rank[rootX]++;
+            }
+            return true;
+        }
+        return false;
+    }
+};
+
+
+// Union-Find structure for GPU
+struct UnionFindGPU {
+    int* parent;
+    int* rank;
+
+    __device__ UnionFindGPU(int n, int* parentArray, int* rankArray) {
+        parent = parentArray;
+        rank = rankArray;
+        for (int i = 0; i < n; ++i) {
+            parent[i] = i;
+            rank[i] = 0;
+        }
+    }
+
+    __device__ int find(int x) {
+        if (parent[x] != x) {
+            parent[x] = find(parent[x]);
+        }
+        return parent[x];
+    }
+
+    __device__ bool union_sets(int x, int y) {
         int rootX = find(x);
         int rootY = find(y);
 
@@ -617,7 +661,251 @@ void dfs_maze_generation_cpu(std::vector<MAZE_PATH>& maze, int size, int start_r
     }
 }
 
-int seq_single_maze() {
+// Kernel to generate mazes using Kruskal's algorithm
+__global__ void generate_mazes_kruskal(curandState* globalState, MAZE_PATH* mazes, int* parentArray, int* rankArray) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    curandState localState = globalState[idx];
+
+    MAZE_PATH* maze = &mazes[idx * N * N];
+    int* parent = &parentArray[idx * (N / 2) * (N / 2)];
+    int* rank = &rankArray[idx * (N / 2) * (N / 2)];
+
+    // Initialize UnionFindGPU
+    UnionFindGPU uf((N / 2) * (N / 2), parent, rank);
+
+    // Initialize maze to walls
+    for (int row = 0; row < N; ++row) {
+        for (int col = 0; col < N; ++col) {
+            maze[row * N + col] = (row % 2 == 0 || col % 2 == 0) ? MAZE_PATH::WALL : MAZE_PATH::EMPTY;
+        }
+    }
+
+    // Calculate maxEdges dynamically
+    int maxEdges = (N / 2) * (N / 2) * 2;
+    int* edges = new int[maxEdges * 4];
+
+    int edgesCount = 0;
+
+    for (int row = 1; row < N; row += 2) {
+        for (int col = 1; col < N; col += 2) {
+            if (row < N - 2) { // Vertical walls
+                edges[edgesCount * 4 + 0] = row;
+                edges[edgesCount * 4 + 1] = col;
+                edges[edgesCount * 4 + 2] = row + 2;
+                edges[edgesCount * 4 + 3] = col;
+                edgesCount++;
+            }
+            if (col < N - 2) { // Horizontal walls
+                edges[edgesCount * 4 + 0] = row;
+                edges[edgesCount * 4 + 1] = col;
+                edges[edgesCount * 4 + 2] = row;
+                edges[edgesCount * 4 + 3] = col + 2;
+                edgesCount++;
+            }
+        }
+    }
+
+    // Shuffle edges
+    for (int i = edgesCount - 1; i > 0; --i) {
+        int j = curand(&localState) % (i + 1);
+        for (int k = 0; k < 4; k++) {
+            int temp = edges[i * 4 + k];
+            edges[i * 4 + k] = edges[j * 4 + k];
+            edges[j * 4 + k] = temp;
+        }
+    }
+
+    // Apply Kruskal's algorithm
+    for (int i = 0; i < edgesCount; ++i) {
+        int row1 = edges[i * 4 + 0];
+        int col1 = edges[i * 4 + 1];
+        int row2 = edges[i * 4 + 2];
+        int col2 = edges[i * 4 + 3];
+
+        int cell1 = (row1 / 2) * (N / 2) + (col1 / 2);
+        int cell2 = (row2 / 2) * (N / 2) + (col2 / 2);
+
+        if (uf.union_sets(cell1, cell2)) {
+            maze[(row1 + row2) / 2 * N + (col1 + col2) / 2] = MAZE_PATH::EMPTY;
+        }
+    }
+
+    delete[] edges;
+    globalState[idx] = localState;
+}
+
+int parallel_kruskal_with_sequential_combine() {
+    auto start = std::chrono::high_resolution_clock::now();
+
+    int num_mazes = P * P;
+    int maze_size = N * N;
+    int large_size = LARGE_MAZE_SIZE * LARGE_MAZE_SIZE;
+
+    // Allocate memory for the mazes on the GPU
+    MAZE_PATH* d_mazes;
+    cudaMalloc(&d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH));
+
+    // Allocate memory for RNG states on the GPU
+    curandState* d_states;
+    cudaMalloc(&d_states, num_mazes * sizeof(curandState));
+
+    // Initialize the RNG states
+    init_rng << <P, P >> > (d_states, static_cast<unsigned long>(time(NULL)));
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
+
+    // Generate the mazes using Kruskal's algorithm
+    int* d_parentArray;
+    cudaMalloc(&d_parentArray, (N / 2) * (N / 2) * num_mazes * sizeof(int));
+    int* d_rankArray;
+    cudaMalloc(&d_rankArray, (N / 2) * (N / 2) * num_mazes * sizeof(int));
+
+    generate_mazes_kruskal << <P, P >> > (d_states, d_mazes, d_parentArray, d_rankArray);
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
+
+    auto endGeneration = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedGeneration = endGeneration - start;
+
+    std::cout << "Maze generation took " << elapsedGeneration.count() << " ms" << std::endl;
+
+    // Copy the mazes back to the host
+    MAZE_PATH* h_mazes = (MAZE_PATH*)malloc(maze_size * num_mazes * sizeof(MAZE_PATH));
+    cudaMemcpy(h_mazes, d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
+    cudaCheckError();
+
+    auto endDataTransfer = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedDataTransfer = endDataTransfer - endGeneration;
+    std::cout << "Data transfer before combining took " << elapsedDataTransfer.count() << " ms" << std::endl;
+
+    // Combine the mazes on the CPU
+    MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(large_size * sizeof(MAZE_PATH));
+    combine_mazes_cpu(h_mazes, h_large_maze);
+
+    auto endCombine = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedCombine = endCombine - endDataTransfer;
+    std::cout << "Combine_mazes took " << elapsedCombine.count() << " ms" << std::endl;
+
+    // Use Union-Find to connect the mazes on the CPU
+    UnionFind uf(num_mazes);
+    connect_mazes(h_large_maze, uf);
+
+    auto endConnect = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedConnect = endConnect - endCombine;
+    std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
+
+    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
+
+    // Print the combined large maze
+    //print_combined_maze(h_large_maze, LARGE_MAZE_SIZE);
+
+    // Free resources
+    cudaFree(d_mazes);
+    cudaFree(d_states);
+    cudaFree(d_parentArray);
+    cudaFree(d_rankArray);
+    free(h_mazes);
+    free(h_large_maze);
+    
+    return 0;
+}
+
+int parallel_kruskal_with_parallel_combine() {
+    auto start = std::chrono::high_resolution_clock::now();
+
+	int num_mazes = P * P;
+	int maze_size = N * N;
+	int large_size = LARGE_MAZE_SIZE * LARGE_MAZE_SIZE;
+
+	// Allocate memory for the mazes on the GPU
+	MAZE_PATH* d_mazes;
+	cudaMalloc(&d_mazes, maze_size * num_mazes * sizeof(MAZE_PATH));
+
+	// Allocate memory for RNG states on the GPU
+	curandState* d_states;
+	cudaMalloc(&d_states, num_mazes * sizeof(curandState));
+
+	// Initialize the RNG states
+	init_rng << <P, P >> > (d_states, static_cast<unsigned long>(time(NULL)));
+	cudaCheckError();
+
+	cudaDeviceSynchronize();
+
+	// Generate the mazes using Kruskal's algorithm
+	int* d_parentArray;
+	cudaMalloc(&d_parentArray, (N / 2) * (N / 2) * num_mazes * sizeof(int));
+	int* d_rankArray;
+	cudaMalloc(&d_rankArray, (N / 2) * (N / 2) * num_mazes * sizeof(int));
+
+	generate_mazes_kruskal << <P, P >> > (d_states, d_mazes, d_parentArray, d_rankArray);
+	cudaCheckError();
+
+	cudaDeviceSynchronize();
+
+	auto endGeneration = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<double, std::milli> elapsedGeneration = endGeneration - start;
+
+	std::cout << "Maze generation took " << elapsedGeneration.count() << " ms" << std::endl;
+
+	// Allocate memory for the combined large maze on the GPU
+	MAZE_PATH* d_large_maze;
+	cudaMalloc(&d_large_maze, large_size * sizeof(MAZE_PATH));
+
+	// Define block and grid dimensions for combining mazes
+	int blockSize = 16;  // 32x32 block size
+	dim3 blockDim(blockSize, blockSize, 1);
+	int gridX = (N + blockSize - 1) / blockSize;
+	int gridY = (N + blockSize - 1) / blockSize;
+	dim3 gridDim(gridX, gridY, P * P);
+
+	// Combine the mazes on the GPU
+	combine_mazes << <gridDim, blockDim >> > (d_mazes, d_large_maze, N, LARGE_MAZE_SIZE, P);
+    cudaCheckError();
+
+    cudaDeviceSynchronize();
+
+    auto endCombine = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedCombine = endCombine - endGeneration;
+
+    std::cout << "Combine_mazes took " << elapsedCombine.count() << " ms" << std::endl;
+
+    // Copy the combined large maze back to the host
+    MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(large_size * sizeof(MAZE_PATH));
+    cudaMemcpy(h_large_maze, d_large_maze, large_size * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
+    cudaCheckError();
+
+    auto endDataTransfer = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedDataTransfer = endDataTransfer - endCombine;
+    std::cout << "Data transfer before connecting took " << elapsedDataTransfer.count() << " ms" << std::endl;
+
+    // Use Union-Find to connect the mazes on the CPU
+
+    UnionFind uf(num_mazes);
+    connect_mazes(h_large_maze, uf);
+
+    auto endConnect = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedConnect = endConnect - endDataTransfer;
+    std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
+
+    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
+
+    // Print the combined large maze
+    //print_combined_maze(h_large_maze, LARGE_MAZE_SIZE);
+
+    // Free resources
+    cudaFree(d_mazes);
+    cudaFree(d_states);
+    cudaFree(d_large_maze);
+    free(h_large_maze);
+
+    return 0;
+}
+
+int seq_DFS_single_maze() {
     int maze_size = 18181;
     auto start = std::chrono::high_resolution_clock::now();
     std::vector<MAZE_PATH> maze;
@@ -634,14 +922,14 @@ int seq_single_maze() {
 
     std::cout << "Sequential single maze generation took " << elapsed.count() << " ms" << std::endl;
 
-    //print_combined_maze(maze.data(), 18180);
+    //print_combined_maze(maze.data(), maze_size);
 
 	return 0;
 
 }
 
 
-int parallel_combine() {
+int parallel_DFS_with_parallel_combine() {
     auto start = std::chrono::high_resolution_clock::now();
 
     int num_mazes = P * P;
@@ -676,10 +964,6 @@ int parallel_combine() {
     // Allocate memory for the combined large maze on the GPU
     MAZE_PATH* d_large_maze;
     cudaMalloc(&d_large_maze, large_size * sizeof(MAZE_PATH));
-
-    // Define block and grid dimensions for combining mazes
-    //dim3 blockDim(N, N, 1);
-    //dim3 gridDim(P, P, num_mazes);
 
     int blockSize = 16;  // 32x32 block size
     dim3 blockDim(blockSize, blockSize, 1);
@@ -735,7 +1019,7 @@ int parallel_combine() {
 
 
 // sequential combination of mazes
-int seq_combine() {
+int parallel_DFS_with_sequential_combine() {
     auto start = std::chrono::high_resolution_clock::now();
 
     int num_mazes = P * P;
@@ -813,6 +1097,68 @@ int seq_combine() {
     return 0;
 }
 
+// Kruskal's algorithm for maze generation on the CPU
+void kruskal_maze_generation_cpu(std::vector<MAZE_PATH>& maze, int size, std::mt19937& rng) {
+    UnionFind uf((size / 2) * (size / 2));
+
+    // List of all edges (walls) between cells
+    std::vector<std::tuple<int, int, int, int>> edges;
+
+    for (int row = 1; row < size; row += 2) {
+        for (int col = 1; col < size; col += 2) {
+            if (row < size - 2) { // Vertical walls
+                edges.emplace_back(row, col, row + 2, col);
+            }
+            if (col < size - 2) { // Horizontal walls
+                edges.emplace_back(row, col, row, col + 2);
+            }
+        }
+    }
+
+    // Shuffle the edges randomly
+    std::shuffle(edges.begin(), edges.end(), rng);
+
+    for (const auto& edge : edges) {
+        int row1 = std::get<0>(edge);
+        int col1 = std::get<1>(edge);
+        int row2 = std::get<2>(edge);
+        int col2 = std::get<3>(edge);
+
+        int cell1 = (row1 / 2) * (size / 2) + (col1 / 2);
+        int cell2 = (row2 / 2) * (size / 2) + (col2 / 2);
+
+        // If the two cells are not already connected
+        if (uf.union_sets(cell1, cell2)) {
+            // Remove the wall between the two cells
+            maze[(row1 + row2) / 2 * size + (col1 + col2) / 2] = MAZE_PATH::EMPTY;
+        }
+    }
+}
+
+
+int seq_Kruskal_single_maze() {
+    int maze_size = 18181;
+    auto start = std::chrono::high_resolution_clock::now();
+    std::vector<MAZE_PATH> maze;
+    int exit_row, exit_col;
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    initialize_maze_cpu(maze, maze_size, exit_row, exit_col, gen);
+    kruskal_maze_generation_cpu(maze, maze_size, gen);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+
+    std::cout << "Sequential single maze generation took " << elapsed.count() << " ms" << std::endl;
+
+    //print_combined_maze(maze.data(), maze_size);
+
+    return 0;
+}
+
+
 
 int main() {
     // Get device properties
@@ -829,14 +1175,24 @@ int main() {
     printf("Number of multiprocessors: %d\n", prop.multiProcessorCount);
     */
     
-    std::cout << "________Running parallel version________" << std::endl << std::endl;
-    parallel_combine();
+    std::cout << "________Running parallel DFS with parallel combine________" << std::endl << std::endl;
+    parallel_DFS_with_parallel_combine();
 
-    std::cout << std::endl << std::endl << "________Running sequential version________" << std::endl << std::endl;
-    seq_combine();
+    std::cout << std::endl << std::endl << "________Running parallel DFS with sequential combine________" << std::endl << std::endl;
+    parallel_DFS_with_sequential_combine();
 
-    std::cout << std::endl << std::endl << "________Running sequential single maze generation________" << std::endl << std::endl;
-    seq_single_maze();
+    std::cout << std::endl << std::endl << "________Running sequential DFS single maze generation________" << std::endl << std::endl;
+    //seq_DFS_single_maze();
+    
+
+    std::cout << std::endl << std::endl << "________Running parallel Kruskal maze with parallel combine________" << std::endl << std::endl;
+    parallel_kruskal_with_parallel_combine();
+
+    std::cout << std::endl << std::endl << "________Running parallel Kruskal maze with sequential combine________" << std::endl << std::endl;
+    parallel_kruskal_with_sequential_combine();
+
+    std::cout << std::endl << std::endl << "________Running sequential Kruskal single maze generation________" << std::endl << std::endl;
+    seq_Kruskal_single_maze();
 
     return 0;
 }
