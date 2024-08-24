@@ -685,6 +685,7 @@ __global__ void generate_mazes_kruskal(curandState* globalState, MAZE_PATH* maze
 
     int edgesCount = 0;
 
+    // Initialize edges list
     for (int row = 1; row < N; row += 2) {
         for (int col = 1; col < N; col += 2) {
             if (row < N - 2) { // Vertical walls
@@ -701,39 +702,40 @@ __global__ void generate_mazes_kruskal(curandState* globalState, MAZE_PATH* maze
                 edge_start[edgesCount * 4 + 3] = col + 2;
                 edgesCount++;
             }
-            if(edgesCount >= (N / 2) * (N / 2) * 2) {
-				printf("Error: Too many edges generated\n");
-			}
         }
     }
 
-    // Shuffle edges
-    for (int i = edgesCount - 1; i > 0; --i) {
-        int j = curand(&localState) % (i + 1);
-        for (int k = 0; k < 4; k++) {
-            int temp = edge_start[i * 4 + k];
-            edge_start[i * 4 + k] = edge_start[j * 4 + k];
-            edge_start[j * 4 + k] = temp;
-        }
-    }
+    // Apply Kruskal's algorithm with random sampling without replacement
+    for (int i = edgesCount - 1; i >= 0; --i) {
+        // Randomly select an edge from the remaining edges
+        int randIdx = curand(&localState) % (i + 1);
 
-    // Apply Kruskal's algorithm
-    for (int i = 0; i < edgesCount; ++i) {
-        int row1 = edge_start[i * 4 + 0];
-        int col1 = edge_start[i * 4 + 1];
-        int row2 = edge_start[i * 4 + 2];
-        int col2 = edge_start[i * 4 + 3];
+        // Access the selected edge
+        int row1 = edge_start[randIdx * 4 + 0];
+        int col1 = edge_start[randIdx * 4 + 1];
+        int row2 = edge_start[randIdx * 4 + 2];
+        int col2 = edge_start[randIdx * 4 + 3];
 
         int cell1 = (row1 / 2) * (N / 2) + (col1 / 2);
         int cell2 = (row2 / 2) * (N / 2) + (col2 / 2);
 
+        // If the two cells are not already connected
         if (uf.union_sets(cell1, cell2)) {
+            // Remove the wall between the two cells
             maze[(row1 + row2) / 2 * N + (col1 + col2) / 2] = MAZE_PATH::EMPTY;
+        }
+
+        // Swap the selected edge with the last edge in the list
+        for (int k = 0; k < 4; ++k) {
+            int temp = edge_start[i * 4 + k];
+            edge_start[i * 4 + k] = edge_start[randIdx * 4 + k];
+            edge_start[randIdx * 4 + k] = temp;
         }
     }
 
     globalState[idx] = localState;
 }
+
 
 
 int parallel_kruskal_with_sequential_combine() {
@@ -770,6 +772,10 @@ int parallel_kruskal_with_sequential_combine() {
     // Now you can use d_edges directly in your kernel
     generate_mazes_kruskal << <P, P >> > (d_states, d_mazes, d_parentArray, d_rankArray, d_edges);
     cudaCheckError();
+
+    cudaFree(d_parentArray);
+    cudaFree(d_rankArray);
+    cudaFree(d_edges);
 
     cudaDeviceSynchronize();
 
@@ -924,6 +930,7 @@ int parallel_kruskal_with_parallel_combine() {
 
 int seq_DFS_single_maze() {
     int maze_size = 18181;
+    //int maze_size = 63;
     auto start = std::chrono::high_resolution_clock::now();
     std::vector<MAZE_PATH> maze;
     int exit_row, exit_col;
