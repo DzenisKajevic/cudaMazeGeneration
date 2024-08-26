@@ -3,7 +3,8 @@
 #include <random>
 #include <chrono>
 #include <tuple> 
-
+#include <stack>
+#include <vector>
 
 // Sequential single maze generation took 199877 ms
 // 101 * 101 * 180 * 180 = equivalent to 18180x18180 maze (18181 since it needs to be odd)
@@ -16,6 +17,7 @@
 #define MAX_SIZE (N * N)
 #define LARGE_MAZE_SIZE (N * P)  // Size of the large maze (N*P x N*P)
 
+// Helper function for checking CUDA errors
 #define cudaCheckError() {                               \
     cudaError_t e = cudaGetLastError();                    \
     if (e != cudaSuccess) {                                \
@@ -32,8 +34,6 @@ enum MAZE_PATH {
     START = 0x4,
     PARTICLE = 0x5,
 };
-
-#include <vector>
 
 // Union-Find data structure to manage connected components
 struct UnionFind {
@@ -118,18 +118,25 @@ struct UnionFindGPU {
         return false;
     }
 };
+// Function declarations
+void initialize_maze_cpu(std::vector<MAZE_PATH>& maze, int size, int& exit_row, int& exit_col, std::mt19937& rng);
+void dfs_maze_generation_cpu(std::vector<MAZE_PATH>& maze, int size, int start_row, int start_col, std::mt19937& rng);
+void kruskal_maze_generation_cpu(std::vector<MAZE_PATH>& maze, int size, std::mt19937& rng);
+void combine_mazes_cpu(MAZE_PATH* small_mazes, MAZE_PATH* large_maze);
+void connect_mazes(MAZE_PATH* large_maze, UnionFind& uf);
+void place_exit(MAZE_PATH* large_maze, int large_size);
+void print_combined_maze(MAZE_PATH* large_maze, int large_size);
 
+// CUDA device functions
 __device__ void initialize_maze_cuda(MAZE_PATH* maze, int size, int* exit_row, int* exit_col, curandState* localState);
-__global__ void init_rng(curandState* state, unsigned long seed);
-__global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes);
-__global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int small_size, int large_size, int num_mazes_per_side);
-
 __device__ void dfs_maze_generation(MAZE_PATH* maze, int size, int start_row, int start_col, curandState* localState);
 __device__ void print_maze_thread(MAZE_PATH* maze, int size);
 
-void connect_mazes(MAZE_PATH* large_maze, int num_mazes, int small_size, int large_size, UnionFind& uf);
-void print_combined_maze(MAZE_PATH* large_maze, int large_size);
-void combine_mazes_cpu(MAZE_PATH* small_mazes, MAZE_PATH* large_maze);
+// CUDA kernel functions
+__global__ void init_rng(curandState* state, unsigned long seed);
+__global__ void generate_mazes(curandState* globalState, MAZE_PATH* mazes);
+__global__ void generate_mazes_kruskal(curandState* globalState, MAZE_PATH* mazes, int* parentArray, int* rankArray, int* edges);
+__global__ void combine_mazes(MAZE_PATH* small_mazes, MAZE_PATH* large_maze, int small_size, int large_size, int num_mazes_per_side);
 
 __device__ void print_maze_thread(MAZE_PATH* maze, int size) {
     for (int row = 0; row < size; ++row) {
@@ -196,6 +203,52 @@ void print_combined_maze(MAZE_PATH* large_maze, int large_size) {
         std::cout << std::endl;
     }
 }
+
+// Function to place an entrance in the final maze
+void place_exit(MAZE_PATH* large_maze, int large_size) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> row_dist(1, large_size - 2);
+    std::uniform_int_distribution<> col_dist(1, large_size - 2);
+
+    int entrance_row, entrance_col;
+    bool valid_position = false;
+
+    while (!valid_position) {
+        int side = rand() % 4;
+
+        switch (side) {
+            case 0: // Top side (but not corners)
+                entrance_row = 0;
+                entrance_col = col_dist(gen);
+                // Ensure there's no inner wall directly below the entrance
+                valid_position = (large_maze[(entrance_row + 1) * large_size + entrance_col] == MAZE_PATH::EMPTY);
+                break;
+            case 1: // Bottom side (but not corners)
+                entrance_row = large_size - 1;
+                entrance_col = col_dist(gen);
+                // Ensure there's no inner wall directly above the entrance
+                valid_position = (large_maze[(entrance_row - 1) * large_size + entrance_col] == MAZE_PATH::EMPTY);
+                break;
+            case 2: // Left side (but not corners)
+                entrance_row = row_dist(gen);
+                entrance_col = 0;
+                // Ensure there's no inner wall directly to the right of the entrance
+                valid_position = (large_maze[entrance_row * large_size + (entrance_col + 1)] == MAZE_PATH::EMPTY);
+                break;
+            case 3: // Right side (but not corners)
+                entrance_row = row_dist(gen);
+                entrance_col = large_size - 1;
+                // Ensure there's no inner wall directly to the left of the entrance
+                valid_position = (large_maze[entrance_row * large_size + (entrance_col - 1)] == MAZE_PATH::EMPTY);
+                break;
+        }
+    }
+
+    // Mark the entrance
+    large_maze[entrance_row * large_size + entrance_col] = MAZE_PATH::EXIT;
+}
+
 
 // Kernel function to initialize random states
 __global__ void init_rng(curandState* state, unsigned long seed) {
@@ -565,102 +618,74 @@ void initialize_maze_cpu(std::vector<MAZE_PATH>& maze, int size, int& exit_row, 
 
 // Sequential DFS Maze Generation with Backtracking on the CPU
 void dfs_maze_generation_cpu(std::vector<MAZE_PATH>& maze, int size, int start_row, int start_col, std::mt19937& rng) {
-    std::vector<std::pair<int, int>> stack;
-    stack.emplace_back(start_row, start_col);
-
+    std::stack<std::pair<int, int>> stack;
     std::vector<bool> visited(size * size, false);
-    visited[start_row * size + start_col] = true;
 
+    // Direction vectors for Up, Down, Left, Right
     int direction[4][2] = { {-2, 0}, {2, 0}, {0, -2}, {0, 2} };
     int exit_direction[4][2] = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} };
 
+    stack.push({ start_row, start_col });
+    visited[start_row * size + start_col] = true;
+
+    std::uniform_int_distribution<int> dist(0, 3);
     bool is_first_move = true;
+    int total_cells = ((size - 1) / 2) * ((size - 1) / 2) + 1;
+    int visited_count = 1;
 
     while (!stack.empty()) {
-        // Unpack the current row and column from the stack
-        int curr_row = stack.back().first;
-        int curr_col = stack.back().second;
-        stack.pop_back();
+        int curr_row = stack.top().first;
+        int curr_col = stack.top().second;
 
-        std::vector<int> directions_to_try = { 0, 1, 2, 3 };
-        std::shuffle(directions_to_try.begin(), directions_to_try.end(), rng);
+        // Shuffle directions to introduce randomness
+        int directions_to_try[4] = { 0, 1, 2, 3 };
+        std::shuffle(std::begin(directions_to_try), std::end(directions_to_try), rng);
 
         bool path_found = false;
 
-        for (int i : directions_to_try) {
+        for (int i = 0; i < 4; ++i) {
             int new_row, new_col;
 
             if (is_first_move) {
-                new_row = curr_row + exit_direction[i][0];
-                new_col = curr_col + exit_direction[i][1];
+                new_row = curr_row + exit_direction[directions_to_try[i]][0];
+                new_col = curr_col + exit_direction[directions_to_try[i]][1];
             }
             else {
-                new_row = curr_row + direction[i][0];
-                new_col = curr_col + direction[i][1];
+                new_row = curr_row + direction[directions_to_try[i]][0];
+                new_col = curr_col + direction[directions_to_try[i]][1];
             }
 
-            if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
+            // Ensure we're not moving out of bounds and no diagonal movement is happening
+            if (new_row >= 1 && new_row < size - 1 && new_col >= 1 && new_col < size - 1) {
                 if (!visited[new_row * size + new_col]) {
                     visited[new_row * size + new_col] = true;
+                    visited_count++;
 
                     int wall_row = (curr_row + new_row) / 2;
                     int wall_col = (curr_col + new_col) / 2;
                     maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
 
-                    stack.emplace_back(new_row, new_col);
+                    stack.push({ new_row, new_col });
                     path_found = true;
-                    is_first_move = false;
+                    is_first_move = false;  // Reset after the first move
                     break;
                 }
             }
         }
 
+        // If no path was found, backtrack
         if (!path_found) {
-            is_first_move = true;  // Allow backtracking to reconsider directions
+            stack.pop();  // Backtrack if no path was found
+        }
+
+        // Ensure all cells are visited
+        if (visited_count >= total_cells) {
+            break;
         }
     }
 
-    // Additional pass to ensure all cells are visited
-    for (int i = 1; i < size; i += 2) {
-        for (int j = 1; j < size; j += 2) {
-            if (!visited[i * size + j]) {
-                stack.emplace_back(i, j);
-                visited[i * size + j] = true;
-                is_first_move = true;
-                while (!stack.empty()) {
-                    int curr_row = stack.back().first;
-                    int curr_col = stack.back().second;
-                    stack.pop_back();
-
-                    std::vector<int> directions_to_try = { 0, 1, 2, 3 };
-                    std::shuffle(directions_to_try.begin(), directions_to_try.end(), rng);
-
-                    for (int dir : directions_to_try) {
-                        int new_row = curr_row + direction[dir][0];
-                        int new_col = curr_col + direction[dir][1];
-
-                        if (new_row > 0 && new_row < size - 1 && new_col > 0 && new_col < size - 1) {
-                            if (!visited[new_row * size + new_col]) {
-                                visited[new_row * size + new_col] = true;
-
-                                int wall_row = (curr_row + new_row) / 2;
-                                int wall_col = (curr_col + new_col) / 2;
-                                maze[wall_row * size + wall_col] = MAZE_PATH::EMPTY;
-
-                                stack.emplace_back(new_row, new_col);
-                                is_first_move = false;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!is_first_move) {
-                        is_first_move = true;
-                    }
-                }
-            }
-        }
-    }
+    // Mark the start point as a wall, closing the exit after generating the maze
+    maze[start_row * size + start_col] = MAZE_PATH::EXIT;
 }
 
 // Kernel to generate mazes using Kruskal's algorithm
@@ -809,7 +834,15 @@ int parallel_kruskal_with_sequential_combine() {
     std::chrono::duration<double, std::milli> elapsedConnect = endConnect - endCombine;
     std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
 
-    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    // place the entrance to the maze
+    place_exit(h_large_maze, LARGE_MAZE_SIZE);
+
+    auto endPlaceEntrance = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedPlaceEntrance = endPlaceEntrance - endConnect;
+
+    std::cout << "Place entrance took " << elapsedPlaceEntrance.count() << " ms" << std::endl;
+
+    std::chrono::duration <double, std::milli> totalElapsed = endPlaceEntrance - start;
     std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
 
     // Print the combined large maze
@@ -913,7 +946,15 @@ int parallel_kruskal_with_parallel_combine() {
     std::chrono::duration<double, std::milli> elapsedConnect = endConnect - endDataTransfer;
     std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
 
-    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    // place the entrance to the maze
+    place_exit(h_large_maze, LARGE_MAZE_SIZE);
+
+    auto endPlaceEntrance = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedPlaceEntrance = endPlaceEntrance - endConnect;
+
+    std::cout << "Place entrance took " << elapsedPlaceEntrance.count() << " ms" << std::endl;
+
+    std::chrono::duration <double, std::milli> totalElapsed = endPlaceEntrance - start;
     std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
 
     // Print the combined large maze
@@ -1006,7 +1047,6 @@ int parallel_DFS_with_parallel_combine() {
 
     std::cout << "Combine_mazes took " << elapsedCombine.count() << " ms" << std::endl;
 
-
     // Copy the combined large maze back to the host
     MAZE_PATH* h_large_maze = (MAZE_PATH*)malloc(large_size * sizeof(MAZE_PATH));
     cudaMemcpy(h_large_maze, d_large_maze, large_size * sizeof(MAZE_PATH), cudaMemcpyDeviceToHost);
@@ -1027,7 +1067,15 @@ int parallel_DFS_with_parallel_combine() {
 
     std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
 
-    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    // place the entrance to the maze
+    place_exit(h_large_maze, LARGE_MAZE_SIZE);
+
+    auto endPlaceEntrance = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedPlaceEntrance = endPlaceEntrance - endConnect;
+
+    std::cout << "Place entrance took " << elapsedPlaceEntrance.count() << " ms" << std::endl;
+
+    std::chrono::duration <double, std::milli> totalElapsed = endPlaceEntrance - start;
     std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
     // Print the combined large maze
     //print_combined_maze(h_large_maze, LARGE_MAZE_SIZE);
@@ -1106,7 +1154,15 @@ int parallel_DFS_with_sequential_combine() {
 
     std::cout << "Maze connection took " << elapsedConnect.count() << " ms" << std::endl;
 
-    std::chrono::duration <double, std::milli> totalElapsed = endConnect - start;
+    // place the entrance to the maze
+    place_exit(h_large_maze, LARGE_MAZE_SIZE);
+
+    auto endPlaceEntrance = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedPlaceEntrance = endPlaceEntrance - endConnect;
+
+    std::cout << "Place entrance took " << elapsedPlaceEntrance.count() << " ms" << std::endl;
+
+    std::chrono::duration <double, std::milli> totalElapsed = endPlaceEntrance - start;
     std::cout << "Total time: " << totalElapsed.count() << " ms" << std::endl;
 
     // Print the combined large maze

@@ -262,3 +262,30 @@ For N = 101, the 16x16 block size might be better overall due to lower thread wa
 32x32 block size is still a valid choice if the problem is compute-bound and memory access coalescing is critical. However, for grids where the dimensions are not multiples of 32, the thread wastage could reduce overall efficiency.
 Conclusion:
 For N = 101, 16x16 is likely the better choice because it provides better thread utilization with minimal overhead, even though it requires more blocks to cover the grid. The reduced thread wastage outweighs the additional scheduling overhead in most scenarios.
+
+
+
+
+
+DFS vs Kruskal brzine:
+
+Kruskal's algorithm is typically slower than DFS for maze generation, particularly in parallel implementations, due to several factors:
+
+1. Algorithm Complexity:
+DFS Complexity: The depth-first search algorithm generally has a time complexity of O(V+E), where V is the number of vertices and E is the number of edges. In a maze, the DFS is mostly limited by the traversal of the grid, which makes it relatively efficient. 
+Kruskal’s Complexity: Kruskal's algorithm has a time complexity of 
+O(ElogE), where E is the number of edges. In the context of maze generation, this involves sorting or shuffling edges and performing union-find operations, which can be more time-consuming, especially when done in parallel.
+2. Parallelization Overhead:
+Union-Find Operations: The union-find operations in Kruskal’s algorithm can be tricky to parallelize efficiently. Each operation involves checking and potentially updating parent and rank arrays, which can lead to synchronization issues and reduce performance.
+Edge Handling: The algorithm requires sorting or shuffling edges, which is a more complex operation to parallelize compared to the simple stack-based approach of DFS.
+3. Memory Access Patterns:
+DFS: DFS typically has more localized memory access patterns, which can be efficiently cached, leading to faster execution.
+Kruskal’s: Kruskal’s algorithm might access memory more randomly due to the edge list operations, leading to cache misses and slower execution.
+4. Work Distribution:
+If the work isn’t distributed evenly across threads, some threads may finish early while others are still working, leading to inefficiencies. This imbalance is more likely in Kruskal’s algorithm because of the varying number of edges and union-find operations each thread might handle.
+5. Parallelism Limitations:
+The parallelism in Kruskal’s algorithm might be limited by the number of edges that can be processed concurrently. As each union-find operation can potentially depend on previous operations, parallelism might be reduced compared to DFS, where each thread can independently carve out a portion of the maze.
+
+Ensure that the work is evenly distributed among threads. You might consider dynamic load balancing if some threads are finishing much earlier than others.
+Conclusion:
+The significant difference in runtime between DFS and Kruskal’s algorithm is not unusual given the nature of Kruskal’s algorithm, especially when parallelized. However, with optimizations in memory access patterns, union-find operations, and load balancing, you might be able to improve the performance.
