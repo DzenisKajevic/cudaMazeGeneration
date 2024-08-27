@@ -289,3 +289,46 @@ The parallelism in Kruskal’s algorithm might be limited by the number of edges
 Ensure that the work is evenly distributed among threads. You might consider dynamic load balancing if some threads are finishing much earlier than others.
 Conclusion:
 The significant difference in runtime between DFS and Kruskal’s algorithm is not unusual given the nature of Kruskal’s algorithm, especially when parallelized. However, with optimizations in memory access patterns, union-find operations, and load balancing, you might be able to improve the performance.
+
+_____
+
+Dodatno objasnjenje za Random Sampling umjesto Shuffle metode za Kruskal (parall)
+
+
+Implementing Random Sampling Without Replacement instead of Full Shuffling:
+
+To improve performance, particularly in the Kruskal's maze generation algorithm, we can implement a random sampling approach instead of fully shuffling all edges. This will reduce the overhead associated with shuffling and potentially speed up the overall process.
+
+Dodatna promjena jer su se iste ivice (edges) birale vise puta:
+
+The loop now iterates from edgesCount - 1 to 0, ensuring that with each iteration, an edge is selected and then "removed" from the remaining list by swapping it with the last unprocessed edge.
+This ensures that the same edge is never selected more than once, thus preventing repeated processing of the same edge.
+
+
+// Apply Kruskal's algorithm with random sampling without replacement
+for (int i = edgesCount - 1; i >= 0; --i) {
+    // Randomly select an edge from the remaining edges
+    int randIdx = curand(&localState) % (i + 1);
+
+    // Access the selected edge
+    int row1 = edge_start[randIdx * 4 + 0];
+    int col1 = edge_start[randIdx * 4 + 1];
+    int row2 = edge_start[randIdx * 4 + 2];
+    int col2 = edge_start[randIdx * 4 + 3];
+
+    int cell1 = (row1 / 2) * (N / 2) + (col1 / 2);
+    int cell2 = (row2 / 2) * (N / 2) + (col2 / 2);
+
+    // If the two cells are not already connected
+    if (uf.union_sets(cell1, cell2)) {
+        // Remove the wall between the two cells
+        maze[(row1 + row2) / 2 * N + (col1 + col2) / 2] = MAZE_PATH::EMPTY;
+    }
+
+    // Swap the selected edge with the last edge in the list
+    for (int k = 0; k < 4; ++k) {
+        int temp = edge_start[i * 4 + k];
+        edge_start[i * 4 + k] = edge_start[randIdx * 4 + k];
+        edge_start[randIdx * 4 + k] = temp;
+    }
+}
