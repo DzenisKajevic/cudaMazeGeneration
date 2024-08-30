@@ -2,7 +2,7 @@
 <Project>
   <ProjectOutputs>
     <ProjectOutput>
-      <FullPath>C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaDFSBacktracking\x64\Debug\CudaBacktrackingNew.exe</FullPath>
+      <FullPath>C:\Users\dzeni\source\repos\CudaBacktrackingNew\cudaMazeGeneration\x64\Debug\CudaBacktrackingNew.exe</FullPath>
     </ProjectOutput>
   </ProjectOutputs>
   <ContentFiles />
